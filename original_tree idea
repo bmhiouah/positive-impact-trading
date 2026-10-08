@@ -1,0 +1,25 @@
+marketmind/
+│
+├── data/
+│   ├── ingestion/
+│   ├── cleaning/
+│   ├── validation/
+│   └── storage/
+│
+├── database/
+│
+├── strategies/
+│
+├── backtesting/
+│
+├── agents/
+│
+├── rag/
+│
+├── api/
+│
+├── evaluation/
+│
+├── monitoring/
+│
+└── tests/

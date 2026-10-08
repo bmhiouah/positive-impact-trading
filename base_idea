@@ -1,0 +1,55 @@
+                         ┌──────────────────┐
+                         │   Market Data    │
+                         │                  │
+                         │ IBKR API         │
+                         │ Historical data  │
+                         │ News             │
+                         └────────┬─────────┘
+                                  │
+                                  ▼
+                         ┌──────────────────┐
+                         │ Data Engineering │
+                         │                  │
+                         │ Pandas           │
+                         │ NumPy            │
+                         │ SQL              │
+                         └────────┬─────────┘
+                                  │
+                    ┌─────────────┴──────────────┐
+                    ▼                            ▼
+             Quant Engine                  Research DB
+                    │                            │
+             ┌──────┴──────┐                     │
+             │             │                     │
+             ▼             ▼                     ▼
+        Technical     Statistical            RAG
+        Signals       Analysis              System
+             │             │                     │
+             └──────┬──────┘                     │
+                    ▼                            │
+             Opportunity Engine ◄────────────────┘
+                    │
+                    ▼
+             ┌──────────────┐
+             │  LangGraph   │
+             │   Research   │
+             │    Agent     │
+             └──────┬───────┘
+                    │
+       ┌────────────┼────────────┐
+       ▼            ▼            ▼
+   Quant Agent  News Agent  Fundamental Agent
+       │            │            │
+       └────────────┼────────────┘
+                    ▼
+              Risk Agent
+                    │
+                    ▼
+              Final Thesis
+                    │
+             ┌──────┴───────┐
+             ▼              ▼
+         Backtesting    Paper Trading
+                            │
+                            ▼
+                          IBKR
