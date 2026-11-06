@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.python-version
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# Linting / formatting
+.ruff_cache/
+.mypy_cache/
+.pyright/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Data / runtime (the journal DB is local state, never committed)
+data/*
+!data/.gitkeep
+*.log
+.streamlit/
+
+# Local agent state: memory notes, DB backups, scratch dirs, archived code
+# (kept on disk for this workspace only — not part of the repository)
+.workbuddy-ai/
+
+# Build
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints
