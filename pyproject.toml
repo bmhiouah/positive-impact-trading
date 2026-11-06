@@ -1,7 +1,7 @@
 [project]
 name = "marketmind"
 version = "0.1.0"
-description = "Minimal long-only IBKR paper-trading lab with systematic TP/SL brackets"
+description = "Data-driven long-only IBKR paper-trading lab: scalable universe, strategy catalogue and systematic TP/SL brackets"
 requires-python = ">=3.11"
 # eventkit / nest_asyncio come from ib_insync; no settings or dotenv layer is used.
 dependencies = [

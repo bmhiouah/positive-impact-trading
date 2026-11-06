@@ -23,3 +23,17 @@ POLL_INTERVAL = 60.0      # seconds between trading cycles
 TAKE_PROFIT_PCT = 0.05    # +5% from the reference price
 STOP_LOSS_PCT = 0.03      # -3% from the reference price
 QUANTITY = 1.0            # shares per long entry
+
+# --- Universe and market data ----------------------------------------------
+# Seed only. The live universe is stored in the `instruments` table and can be
+# extended from the cockpit's Data page, so no code change is needed to add a
+# stock. Everything downstream (ingestion, coverage, strategies, the runner)
+# reads the universe from that one table.
+DEFAULT_UNIVERSE = (
+    "AAPL", "MSFT", "NVDA", "TSLA", "JPM", "SPUS", "HLAL",
+)
+HISTORY_DURATION = "1 Y"
+HISTORY_BAR_SIZE = "1 day"
+MIN_BARS_FOR_SIGNALS = 60
+DATA_STALE_HOURS = 36      # coverage older than this is "partial", not "ready"
+DATA_SYNC_COOLDOWN = 3600  # seconds between automatic refreshes by the runner

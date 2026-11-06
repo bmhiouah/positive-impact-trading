@@ -44,6 +44,36 @@ class Baseline:
     original_capital: float
     original_cash: float
     original_equity: float
+    currency: str = "USD"
+
+
+@dataclass(frozen=True)
+class PnlBreakdown:
+    """Why the account value moved — trading profit is NOT the whole story.
+
+    A flat paper account still earns interest on its idle cash. Showing only
+    ``NetLiquidation - original`` as "P&L" makes an empty trades table look
+    like a bug, so the two sources are kept separate all the way to the UI.
+    """
+
+    currency: str
+    original: float
+    current: float
+    total_change: float
+    trading_pnl: float
+    realized_pnl: float
+    unrealized_pnl: float
+    interest_and_other: float
+    accrued_cash: float
+    trades_count: int
+
+    @property
+    def change_pct(self) -> float:
+        return 100.0 * self.total_change / self.original if self.original else 0.0
+
+    @property
+    def has_trading_activity(self) -> bool:
+        return bool(self.trades_count or self.realized_pnl or self.unrealized_pnl)
 
 
 @dataclass(frozen=True)
@@ -103,6 +133,7 @@ class PaperJournal:
                 original_capital  REAL NOT NULL,
                 original_cash     REAL NOT NULL,
                 original_equity   REAL NOT NULL,
+                currency          TEXT NOT NULL DEFAULT 'USD',
                 source            TEXT NOT NULL DEFAULT 'IBKR'
             )
             """
@@ -116,7 +147,13 @@ class PaperJournal:
                 equity            REAL NOT NULL,
                 pnl_vs_original   REAL NOT NULL DEFAULT 0,
                 orders_count      INTEGER NOT NULL DEFAULT 0,
-                updated_at_utc    TEXT NOT NULL
+                updated_at_utc    TEXT NOT NULL,
+                accrued_cash      REAL NOT NULL DEFAULT 0,
+                realized_pnl      REAL NOT NULL DEFAULT 0,
+                unrealized_pnl    REAL NOT NULL DEFAULT 0,
+                trading_pnl       REAL NOT NULL DEFAULT 0,
+                interest_pnl      REAL NOT NULL DEFAULT 0,
+                currency          TEXT NOT NULL DEFAULT 'USD'
             )
             """
         )
@@ -143,7 +180,41 @@ class PaperJournal:
             )
             """
         )
+        self._migrate()
         c.commit()
+
+    def _migrate(self) -> None:
+        """Add newer columns to databases created by the first MVP."""
+        additions = {
+            "paper_baseline": {"currency": "TEXT NOT NULL DEFAULT 'USD'"},
+            "paper_daily": {
+                "accrued_cash": "REAL NOT NULL DEFAULT 0",
+                "realized_pnl": "REAL NOT NULL DEFAULT 0",
+                "unrealized_pnl": "REAL NOT NULL DEFAULT 0",
+                "trading_pnl": "REAL NOT NULL DEFAULT 0",
+                "interest_pnl": "REAL NOT NULL DEFAULT 0",
+                "currency": "TEXT NOT NULL DEFAULT 'USD'",
+            },
+        }
+        for table, columns in additions.items():
+            existing = {
+                row[1] for row in self.conn.execute(f"PRAGMA table_info({table})")
+            }
+            for name, ddl in columns.items():
+                if name not in existing:
+                    self.conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"
+                    )
+        # Legacy rows already hold `pnl_vs_original` and `trading_pnl`; the
+        # residual is interest/fees. Derive it instead of leaving a misleading
+        # zero in the new column. Idempotent, and only touches migrated rows.
+        self.conn.execute(
+            """UPDATE paper_daily
+                  SET interest_pnl = pnl_vs_original - trading_pnl
+                WHERE interest_pnl = 0
+                  AND pnl_vs_original <> trading_pnl"""
+        )
+        self.conn.commit()
 
     # ------------------------------------------------------------------
     # Baseline (the original paper money)
@@ -152,7 +223,7 @@ class PaperJournal:
     def baseline(self) -> Optional[Baseline]:
         row = self.conn.execute(
             """SELECT recorded_at_utc, account_id, original_capital,
-                      original_cash, original_equity
+                      original_cash, original_equity, currency
                FROM paper_baseline WHERE id = 1"""
         ).fetchone()
         if row is None:
@@ -160,7 +231,7 @@ class PaperJournal:
         return Baseline(
             recorded_at_utc=row[0], account_id=row[1],
             original_capital=float(row[2]), original_cash=float(row[3]),
-            original_equity=float(row[4]),
+            original_equity=float(row[4]), currency=row[5] or "USD",
         )
 
     def ensure_baseline(self, snapshot: AccountSnapshot) -> Baseline:
@@ -168,16 +239,25 @@ class PaperJournal:
         with self._lock:
             existing = self.baseline()
             if existing is not None:
+                # Currency is metadata, not capital: correct a legacy row that
+                # assumed USD before the account base currency was captured.
+                if existing.currency == "USD" and snapshot.currency != "USD":
+                    self.conn.execute(
+                        "UPDATE paper_baseline SET currency = ? WHERE id = 1",
+                        (snapshot.currency,),
+                    )
+                    self.conn.commit()
+                    existing = self.baseline()
                 return existing
             split = allocation_of(snapshot)
             c = self.conn
             c.execute(
                 """INSERT OR IGNORE INTO paper_baseline
                    (id, recorded_at_utc, account_id, original_capital,
-                    original_cash, original_equity, source)
-                   VALUES (1, ?, ?, ?, ?, ?, 'IBKR')""",
+                    original_cash, original_equity, currency, source)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, 'IBKR')""",
                 (_utcnow(), snapshot.account_id, float(snapshot.net_liquidation),
-                 split.cash, split.equity),
+                 split.cash, split.equity, snapshot.currency),
             )
             c.commit()
             logger.info(
@@ -191,12 +271,23 @@ class PaperJournal:
     # ------------------------------------------------------------------
 
     def record(self, snapshot: AccountSnapshot) -> None:
-        """Store one observation and upsert today's row (no duplicate spam)."""
+        """Store one observation and upsert today's row (no duplicate spam).
+
+        The account value can move for two completely different reasons:
+        trading (realized + unrealized P&L) and interest/fees on idle cash.
+        Both are stored explicitly so the UI never presents interest as a
+        trading gain.
+        """
         with self._lock:
             split = allocation_of(snapshot)
             base = self.baseline()
             original = base.original_capital if base else snapshot.net_liquidation
-            pnl = float(snapshot.net_liquidation) - float(original)
+            current = float(snapshot.net_liquidation)
+            total_change = current - float(original)
+            realized = float(snapshot.realized_pnl or 0.0)
+            unrealized = float(snapshot.unrealized_pnl or 0.0)
+            trading_pnl = realized + unrealized
+            interest_pnl = total_change - trading_pnl
             orders_today = self.conn.execute(
                 "SELECT COUNT(*) FROM paper_orders "
                 "WHERE substr(timestamp_utc, 1, 10) = ?", (_today(),)
@@ -210,29 +301,86 @@ class PaperJournal:
             c.execute(
                 """INSERT INTO paper_daily
                    (date_utc, net_liquidation, cash, equity,
-                    pnl_vs_original, orders_count, updated_at_utc)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                    pnl_vs_original, orders_count, updated_at_utc,
+                    accrued_cash, realized_pnl, unrealized_pnl,
+                    trading_pnl, interest_pnl, currency)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(date_utc) DO UPDATE SET
                      net_liquidation = excluded.net_liquidation,
                      cash            = excluded.cash,
                      equity          = excluded.equity,
                      pnl_vs_original = excluded.pnl_vs_original,
                      orders_count    = excluded.orders_count,
-                     updated_at_utc  = excluded.updated_at_utc""",
-                (_today(), float(snapshot.net_liquidation), split.cash,
-                 split.equity, pnl, orders_today, _utcnow()),
+                     updated_at_utc  = excluded.updated_at_utc,
+                     accrued_cash    = excluded.accrued_cash,
+                     realized_pnl    = excluded.realized_pnl,
+                     unrealized_pnl  = excluded.unrealized_pnl,
+                     trading_pnl     = excluded.trading_pnl,
+                     interest_pnl    = excluded.interest_pnl,
+                     currency        = excluded.currency""",
+                (_today(), current, split.cash, split.equity, total_change,
+                 orders_today, _utcnow(), float(snapshot.accrued_cash or 0.0),
+                 realized, unrealized, trading_pnl, interest_pnl,
+                 snapshot.currency or "USD"),
             )
             c.commit()
 
     def daily_history(self) -> List[Dict[str, Any]]:
         rows = self.conn.execute(
             """SELECT date_utc, net_liquidation, cash, equity,
-                      pnl_vs_original, orders_count, updated_at_utc
+                      pnl_vs_original, orders_count, updated_at_utc,
+                      accrued_cash, realized_pnl, unrealized_pnl,
+                      trading_pnl, interest_pnl, currency
                FROM paper_daily ORDER BY date_utc ASC"""
         ).fetchall()
         keys = ("date_utc", "net_liquidation", "cash", "equity",
-                "pnl_vs_original", "orders_count", "updated_at_utc")
+                "pnl_vs_original", "orders_count", "updated_at_utc",
+                "accrued_cash", "realized_pnl", "unrealized_pnl",
+                "trading_pnl", "interest_pnl", "currency")
         return [dict(zip(keys, row)) for row in rows]
+
+    def pnl_breakdown(self, snapshot=None) -> Optional[PnlBreakdown]:
+        """The single source of truth for the headline P&L numbers.
+
+        Prefers a live API snapshot when available; otherwise falls back to the
+        latest journal row. Never mixes the two sources.
+        """
+        base = self.baseline()
+        if base is None:
+            return None
+        if snapshot is not None:
+            current = float(snapshot.net_liquidation)
+            realized = float(snapshot.realized_pnl or 0.0)
+            unrealized = float(snapshot.unrealized_pnl or 0.0)
+            accrued = float(snapshot.accrued_cash or 0.0)
+            currency = snapshot.currency or base.currency
+        else:
+            latest = self.latest()
+            if latest is None:
+                current = base.original_capital
+                realized = unrealized = accrued = 0.0
+            else:
+                current = float(latest["net_liquidation"])
+                realized = float(latest["realized_pnl"])
+                unrealized = float(latest["unrealized_pnl"])
+                accrued = float(latest["accrued_cash"])
+            currency = base.currency
+        total_change = current - base.original_capital
+        trading_pnl = realized + unrealized
+        return PnlBreakdown(
+            currency=currency,
+            original=base.original_capital,
+            current=current,
+            total_change=total_change,
+            trading_pnl=trading_pnl,
+            realized_pnl=realized,
+            unrealized_pnl=unrealized,
+            interest_and_other=total_change - trading_pnl,
+            accrued_cash=accrued,
+            trades_count=self.conn.execute(
+                "SELECT COUNT(*) FROM paper_orders"
+            ).fetchone()[0],
+        )
 
     def latest(self) -> Optional[Dict[str, Any]]:
         history = self.daily_history()
@@ -289,11 +437,13 @@ class PaperJournal:
         rows = self.conn.execute(
             """SELECT timestamp_utc, symbol, side, quantity, entry_order_id,
                       entry_type, entry_price, reference_price,
-                      take_profit_price, stop_loss_price, status, note
+                      take_profit_order_id, take_profit_price,
+                      stop_loss_order_id, stop_loss_price, status, note
                FROM paper_orders ORDER BY id DESC LIMIT ?""",
             (int(limit),),
         ).fetchall()
         keys = ("timestamp_utc", "symbol", "side", "quantity", "entry_order_id",
                 "entry_type", "entry_price", "reference_price",
-                "take_profit_price", "stop_loss_price", "status", "note")
+                "take_profit_order_id", "take_profit_price",
+                "stop_loss_order_id", "stop_loss_price", "status", "note")
         return [dict(zip(keys, row)) for row in rows]

@@ -38,21 +38,14 @@ from marketmind.compliance import (
     OrderIntent,
     OrderSide,
 )
-from marketmind.data import DataStore, DataIntegratedScreener
+from marketmind.compliance.rules import WHITELISTED_ETFS, WHITELISTED_METALS
+from marketmind.data import DataStore
 from marketmind.journal import PaperJournal
-from marketmind.strategies import (
-    BaseStrategy,
-    CompositeStrategy,
-    DebtRatioStrategy,
-    SectorExclusionStrategy,
-    StrategySignal,
-)
+from marketmind.market_data import MarketDataService
+from marketmind.universe import Universe
+from marketmind import strategy_catalog
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_SYMBOLS = ["AAPL", "MSFT", "TSLA", "JPM", "SPUS", "HLAL"]
-_IMPACT_ETFS = {"SPUS", "HLAL", "UMMA", "ISUS"}
-_SPOT_METALS = {"XAUUSD", "XAGUSD", "GOLD", "SILVER"}
 
 
 class LiveTradingRunner:
@@ -76,31 +69,8 @@ class LiveTradingRunner:
         )
         self._store = DataStore(self._db_path)
         self._journal = PaperJournal(self._store)
-        self._screener = DataIntegratedScreener(self._store)
-        self._strategies: List[BaseStrategy] = [
-            DebtRatioStrategy(
-                name="debt", data_store=self._store, screener=self._screener,
-                max_debt_ratio=0.33,
-            ),
-            SectorExclusionStrategy(
-                name="sector", data_store=self._store, screener=self._screener,
-            ),
-            CompositeStrategy(
-                name="composite_50_50",
-                data_store=self._store,
-                screener=self._screener,
-                strategies=[
-                    DebtRatioStrategy(
-                        name="d", data_store=self._store, screener=self._screener,
-                        max_debt_ratio=0.33,
-                    ),
-                    SectorExclusionStrategy(
-                        name="s", data_store=self._store, screener=self._screener,
-                    ),
-                ],
-                strategy_weights=[0.5, 0.5],
-            ),
-        ]
+        self._universe = Universe(self._store)
+        self._market = MarketDataService(self._store, self._universe)
 
         self._running = False
         self._stop_event = threading.Event()
@@ -110,6 +80,7 @@ class LiveTradingRunner:
         self._last_error: Optional[str] = None
         self._cycle_count = 0
         self._last_cycle_at: Optional[str] = None
+        self._last_data_sync = 0.0
 
     # ------------------------------------------------------------------
     # Lifecycle — connection first, trading second
@@ -157,6 +128,7 @@ class LiveTradingRunner:
             "net_liquidation": snapshot.net_liquidation,
             "original_capital": baseline.original_capital,
             "baseline_recorded_at": baseline.recorded_at_utc,
+            "currency": snapshot.currency,
         }
 
     async def start_async(self) -> Dict[str, Any]:
@@ -284,6 +256,25 @@ class LiveTradingRunner:
             logger.debug("Could not read open orders: %s", exc)
         return active
 
+    def _maybe_sync_data(self) -> None:
+        """Refresh the universe through the ALREADY OPEN session.
+
+        A second connection is forbidden, so the runner reuses its own adapter
+        instead of opening a new client id 1 session. A cooldown prevents a
+        symbol IBKR cannot serve from being retried every 60 seconds.
+        """
+        now = time.monotonic()
+        if now - self._last_data_sync < config.DATA_SYNC_COOLDOWN:
+            return
+        coverage = self._market.coverage()
+        if coverage and all(row["status"] == "ready" for row in coverage):
+            self._last_data_sync = now
+            return
+        logger.info("Refreshing IBKR market data for %s instruments",
+                    len(coverage))
+        self._market.sync(self._adapter)
+        self._last_data_sync = now
+
     def _run_trading_cycle(self) -> Dict[str, Any]:
         logger.info("Starting trading cycle at %s",
                     datetime.now(timezone.utc).isoformat())
@@ -293,53 +284,59 @@ class LiveTradingRunner:
         self._journal.record(snap)
         self._portfolio_value = float(snap.net_liquidation)
 
-        # Step 1: generate signals from all strategies.
-        all_signals: List[StrategySignal] = []
-        for strategy in self._strategies:
-            try:
-                signals = strategy.generate_signals(DEFAULT_SYMBOLS)
-                all_signals.extend(signals)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Error generating signals for %s: %s",
-                             strategy.name, exc)
+        # Step 0b: make the lab self-sufficient. The first cycle with an empty
+        # or stale price history ingests contracts, daily bars and quotes over
+        # this same connection, so strategies have real data to work with.
+        try:
+            self._maybe_sync_data()
+        except Exception as exc:  # noqa: BLE001 - never let data stop trading
+            logger.warning("Automatic data sync failed: %s", exc)
 
-        # Long-only: keep BUY entries. SELL exits are handled by the TP/SL legs.
-        entries = [s for s in all_signals if s.action == "BUY"]
+        # Step 1: run only the strategies the CURRENT data actually supports.
+        # The universe comes from the instruments table, so adding a stock in
+        # the cockpit automatically extends every subsequent cycle.
+        symbols = self._universe.symbols()
+        coverage = self._market.coverage()
+        ready = [s["name"] for s in strategy_catalog.availability(coverage)
+                 if s["ready"]]
+        entries = strategy_catalog.run_all_ready(symbols, self._store, coverage)
         if not entries:
-            return {"signals": len(all_signals), "entries": 0,
-                    "approved": 0, "submitted": 0, "skipped": 0}
+            return {"signals": 0, "entries": 0, "approved": 0,
+                    "submitted": 0, "skipped": 0,
+                    "universe": len(symbols), "strategies_ready": len(ready)}
 
-        # Deduplicate by symbol, keep the strongest signal.
-        seen: Dict[str, StrategySignal] = {}
-        for signal in entries:
-            if signal.symbol not in seen or signal.strength > seen[signal.symbol].strength:
-                seen[signal.symbol] = signal
-        final_signals = sorted(seen.values(), key=lambda s: s.strength, reverse=True)
+        final_signals = entries
 
         active = self._active_symbols()
         approved_count = submitted_count = skipped_count = 0
 
         for signal in final_signals:
-            if signal.symbol in active:
+            if signal["symbol"] in active:
                 skipped_count += 1
                 logger.info("Skipping %s — position or bracket already open",
-                            signal.symbol)
+                            signal["symbol"])
                 continue
 
-            is_impact_etf = signal.symbol in _IMPACT_ETFS
-            is_spot_metal = signal.symbol in _SPOT_METALS
+            # The compliance module owns these whitelists. Never duplicate
+            # them here: a new impact ETF must be recognised everywhere at once.
+            is_impact_etf = signal["symbol"] in WHITELISTED_ETFS
+            is_spot_metal = signal["symbol"] in WHITELISTED_METALS
             asset_class = (AssetClass.ETF if is_impact_etf
                            else AssetClass.SPOT_METAL if is_spot_metal
                            else AssetClass.EQUITY)
 
+            # The compliance gate needs real fundamental data. It is supplied
+            # from the data layer (contract metadata + values entered in the
+            # cockpit); a missing debt ratio correctly blocks the order.
+            fund = self._store.get_fundamental_data(signal["symbol"])
             intent = OrderIntent(
-                symbol=signal.symbol,
+                symbol=signal["symbol"],
                 asset_class=asset_class,
                 side=OrderSide.BUY,
                 quantity=config.QUANTITY,
                 account_type=AccountType.CASH,
-                sector=None,
-                debt_to_market_cap=None,
+                sector=fund.sector if fund else None,
+                debt_to_market_cap=(fund.debt_to_market_cap if fund else None),
                 is_impact_etf=is_impact_etf,
                 is_spot_metal=is_spot_metal,
             )
@@ -347,19 +344,19 @@ class LiveTradingRunner:
                 result = self._adapter.submit_order(intent)
             except Exception as exc:  # noqa: BLE001
                 self._journal.record_bracket(
-                    symbol=signal.symbol, side="BUY", quantity=config.QUANTITY,
+                    symbol=signal["symbol"], side="BUY", quantity=config.QUANTITY,
                     entry_order_id=None, entry_type="BRACKET",
                     entry_price=None, reference_price=0.0,
                     take_profit_order_id=None, take_profit_price=0.0,
                     stop_loss_order_id=None, stop_loss_price=0.0,
                     status="error", account_id=snap.account_id, note=str(exc),
                 )
-                logger.error("Bracket failed for %s: %s", signal.symbol, exc)
+                logger.error("Bracket failed for %s: %s", signal["symbol"], exc)
                 continue
 
             if not result.get("approved"):
                 self._journal.record_bracket(
-                    symbol=signal.symbol, side="BUY", quantity=config.QUANTITY,
+                    symbol=signal["symbol"], side="BUY", quantity=config.QUANTITY,
                     entry_order_id=None, entry_type="BRACKET",
                     entry_price=None, reference_price=0.0,
                     take_profit_order_id=None, take_profit_price=0.0,
@@ -367,16 +364,16 @@ class LiveTradingRunner:
                     status="blocked", account_id=snap.account_id,
                     note=result.get("rejection_reason"),
                 )
-                logger.debug("Blocked for %s: %s", signal.symbol,
+                logger.debug("Blocked for %s: %s", signal["symbol"],
                              result.get("rejection_reason"))
                 continue
 
             approved_count += 1
             if result.get("submitted"):
                 submitted_count += 1
-                active.add(signal.symbol)
+                active.add(signal["symbol"])
                 self._journal.record_bracket(
-                    symbol=signal.symbol, side="BUY",
+                    symbol=signal["symbol"], side="BUY",
                     quantity=config.QUANTITY,
                     entry_order_id=result.get("order_id"),
                     entry_type=result.get("entry_type", "MKT"),
@@ -388,18 +385,21 @@ class LiveTradingRunner:
                     stop_loss_price=result["stop_loss_price"],
                     status=result.get("status", "Submitted"),
                     account_id=snap.account_id,
-                    note=f"TP +{config.TAKE_PROFIT_PCT:.0%} / "
+                    note=f"{signal.get('strategy_name', 'strategy')} · "
+                         f"TP +{config.TAKE_PROFIT_PCT:.0%} / "
                          f"SL -{config.STOP_LOSS_PCT:.0%}",
                 )
                 logger.info("BRACKET SUBMITTED to IBKR: %s %s (id=%s)",
-                            signal.symbol, config.QUANTITY, result.get("order_id"))
+                            signal["symbol"], config.QUANTITY, result.get("order_id"))
 
         return {
-            "signals": len(all_signals),
+            "signals": len(final_signals),
             "entries": len(final_signals),
             "approved": approved_count,
             "submitted": submitted_count,
             "skipped": skipped_count,
+            "universe": len(symbols),
+            "strategies_ready": len(ready),
         }
 
 
@@ -411,8 +411,9 @@ def run_continuous_trading(
     runner = LiveTradingRunner(db_path=db_path, poll_interval=poll_interval)
     try:
         info = runner.start()
+        currency = info.get("currency") or "USD"
         print(f"Connected to paper account {info['account']} — algo running")
-        print(f"Original paper money: ${info['original_capital']:,.2f}")
+        print(f"Original paper money: {info['original_capital']:,.2f} {currency}")
         while True:
             time.sleep(1)
     except KeyboardInterrupt:

@@ -41,6 +41,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_DB_PATH = Path("data/marketmind.db")
 
 
+def _utc_naive() -> datetime.datetime:
+    """Naive UTC now — ``datetime.utcnow()`` is deprecated on Python 3.14."""
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+
 class DataStore:
     """SQLite-backed storage for market data and compliance screening results."""
 
@@ -348,7 +353,7 @@ class DataStore:
             return 0
 
         c = self.conn
-        now_iso = datetime.datetime.utcnow().isoformat() + 'Z'
+        now_iso = _utc_naive().isoformat() + 'Z'
         rows = [
             (
                 bar.symbol,
@@ -394,7 +399,7 @@ class DataStore:
         try:
             ts = _dt.fromisoformat(ts_str.replace("Z", ""))
         except (ValueError, AttributeError):
-            ts = _dt.utcnow()
+            ts = _utc_naive()
         return PriceBar(
             symbol=row[0],
             timestamp=ts,
@@ -435,7 +440,7 @@ class DataStore:
             try:
                 ts = _dt.fromisoformat(ts_str.replace("Z", ""))
             except (ValueError, AttributeError):
-                ts = _dt.utcnow()
+                ts = _utc_naive()
             bars.append(PriceBar(
                 symbol=row[0],
                 timestamp=ts,
@@ -493,7 +498,7 @@ class DataStore:
             return 0
 
         c = self.conn
-        now_iso = datetime.datetime.utcnow().isoformat() + 'Z'
+        now_iso = _utc_naive().isoformat() + 'Z'
         rows = [
             (
                 d.symbol,
@@ -523,7 +528,7 @@ class DataStore:
     def upsert_fundamental_data(self, data: FundamentalData) -> int:
         """Insert or replace a single fundamental data record (upsert by symbol)."""
         c = self.conn
-        now_iso = datetime.datetime.utcnow().isoformat() + 'Z'
+        now_iso = _utc_naive().isoformat() + 'Z'
         last_updated_iso = (
             data.last_updated.isoformat() + 'Z'
             if hasattr(data.last_updated, 'isoformat')
@@ -569,7 +574,7 @@ class DataStore:
         import json
 
         c = self.conn
-        now_iso = datetime.datetime.utcnow().isoformat() + 'Z'
+        now_iso = _utc_naive().isoformat() + 'Z'
         rows = [
             (
                 r.symbol,
@@ -600,7 +605,17 @@ class DataStore:
     # ------------------------------------------------------------------ #
 
     def log_data_update(self, update: DataUpdate) -> None:
-        """Record a data update operation for auditability."""
+        """Record a data update operation for auditability.
+
+        Timestamps are written as explicit ISO strings: Python 3.12+ has
+        deprecated sqlite3's implicit datetime adapters, and ``coverage()``
+        parses these columns back with ``datetime.fromisoformat``.
+        """
+        def iso(value):
+            if value is None:
+                return None
+            return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
         c = self.conn
         c.execute(
             """
@@ -613,8 +628,8 @@ class DataStore:
                 update.symbol,
                 update.update_type,
                 update.records_inserted,
-                update.started_at,
-                update.completed_at,
+                iso(update.started_at),
+                iso(update.completed_at),
                 update.status,
                 update.error_message,
                 update.source,
@@ -735,7 +750,7 @@ class DataStore:
         c = self.conn
         rows = [
             (
-                getattr(record, 'timestamp_utc', datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%fZ')),
+                getattr(record, 'timestamp_utc', _utc_naive().strftime('%Y-%m-%dT%H:%M:%fZ')),
                 getattr(record, 'portfolio_value', 0.0),
                 getattr(record, 'paper_trading', True),
             )
@@ -1034,7 +1049,7 @@ class DataStore:
     def insert_contract(self, record: ContractInfo) -> int:
         """Insert or replace a contract info record."""
         c = self.conn
-        c.execute(
+        cur = c.execute(
             """
             INSERT OR REPLACE INTO contracts
             (symbol, con_id, exchange, currency, asset_class, sector,
@@ -1057,7 +1072,7 @@ class DataStore:
             ),
         )
         c.commit()
-        return c.lastrowid or 1
+        return cur.lastrowid or 1
 
     def get_contracts(self):
         """Get all contract info records."""

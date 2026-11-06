@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import streamlit as st
@@ -24,6 +25,7 @@ from marketmind import config
 from marketmind.data import DataStore
 from marketmind.journal import PaperJournal
 from marketmind.live_trading import LiveTradingRunner
+from marketmind.market_data import MarketDataService
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,8 @@ class CockpitState:
     live_snapshot: Optional[Any] = field(default=None, repr=False)
     snapshot_at: Optional[str] = field(default=None, repr=False)
     refresh_error: Optional[str] = None
+    last_sync: Optional[Dict[str, Any]] = None
+    sync_error: Optional[str] = None
 
 
 @st.cache_resource
@@ -64,6 +68,12 @@ def get_store() -> DataStore:
 def get_journal() -> PaperJournal:
     """The single paper-trading journal used by every page."""
     return PaperJournal(get_store())
+
+
+@st.cache_resource
+def get_market() -> MarketDataService:
+    """One universe + one ingestion service, shared by every page."""
+    return MarketDataService(get_store())
 
 
 def get_state() -> CockpitState:
@@ -172,8 +182,6 @@ def refresh_snapshot() -> bool:
     observation to the journal, and disconnects. Only allowed while the algo
     is stopped, since there can be only one connection at a time.
     """
-    from datetime import datetime, timezone
-
     from marketmind.broker import IBKRAdapter
 
     state = get_state()
@@ -196,6 +204,43 @@ def refresh_snapshot() -> bool:
     except Exception as exc:  # noqa: BLE001
         state.refresh_error = str(exc)
         logger.error("Snapshot refresh failed: %s", exc)
+        return False
+    finally:
+        adapter.disconnect()
+
+
+def sync_data(symbols: Optional[list[str]] = None) -> bool:
+    """One short-lived session: refresh account + contract/bars/quotes.
+
+    Data ingestion needs the same single client-id-1 session as trading, so
+    it is refused while the algo is running (and vice versa). The call refreshes
+    the journal too, which makes this the natural "daily check-in" action.
+    """
+    from marketmind.broker import IBKRAdapter
+
+    state = get_state()
+    if state.algo_running:
+        state.sync_error = "Stop the algo first — only one connection is allowed."
+        return False
+
+    adapter = IBKRAdapter()
+    try:
+        adapter.connect()
+        snapshot = adapter.get_account_snapshot()
+        journal = get_journal()
+        journal.ensure_baseline(snapshot)
+        journal.record(snapshot)
+        result = get_market().sync(adapter, symbols=symbols)
+        state.last_sync = result
+        state.sync_error = None
+        state.live_snapshot = snapshot
+        state.snapshot_at = datetime.now(timezone.utc).isoformat()
+        state.ibkr_account = snapshot.account_id
+        state.refresh_error = None
+        return True
+    except Exception as exc:  # noqa: BLE001
+        state.sync_error = str(exc)
+        logger.error("Data sync failed: %s", exc)
         return False
     finally:
         adapter.disconnect()

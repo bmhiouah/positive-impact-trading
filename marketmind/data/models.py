@@ -1,18 +1,23 @@
 """Data models for the market data layer.
 
 All models use Pydantic for validation and serialization. They represent
-the canonical schema for market data stored in DuckDB and passed between
+the canonical schema for market data stored in SQLite and passed between
 ingestion, enrichment, and screening components.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from decimal import Decimal
 from typing import Optional, List
 from pydantic import BaseModel, Field, ConfigDict
 
 from marketmind.compliance.rules import AssetClass
+
+
+def _utc_naive() -> datetime:
+    """Naive UTC now — ``datetime.utcnow()`` is deprecated on Python 3.14."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class PriceBar(BaseModel):
@@ -56,7 +61,7 @@ class FundamentalData(BaseModel):
     country: Optional[str] = Field(None, description="Country of incorporation")
     currency: str = Field("USD", description="Trading currency")
     last_updated: datetime = Field(
-        default_factory=datetime.utcnow, description="When fundamentals were last fetched"
+        default_factory=_utc_naive, description="When fundamentals were last fetched"
     )
     source: str = Field("IBKR", description="Data source")
 
@@ -83,7 +88,7 @@ class ScreenResult(BaseModel):
     reasons: List[str] = Field(default_factory=list)
     sector: Optional[str] = None
     debt_to_market_cap: Optional[float] = None
-    screened_at: datetime = Field(default_factory=datetime.utcnow)
+    screened_at: datetime = Field(default_factory=_utc_naive)
 
 
 class DataUpdate(BaseModel):
@@ -94,7 +99,7 @@ class DataUpdate(BaseModel):
     symbol: str
     update_type: str = Field(..., description="price, fundamental, screen, etc.")
     records_inserted: int = Field(..., ge=0)
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=_utc_naive)
     completed_at: Optional[datetime] = None
     status: str = Field("success", description="success, partial, failed")
     error_message: Optional[str] = None
@@ -111,7 +116,7 @@ class AccountSnapshot(BaseModel):
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    timestamp_utc: datetime = Field(default_factory=datetime.utcnow)
+    timestamp_utc: datetime = Field(default_factory=_utc_naive)
     account_id: Optional[str] = Field(None, description="IBKR account number")
     net_liquidation: float = Field(..., description="Net liquidation value (total portfolio value)")
     total_cash_value: float = Field(0.0, description="Total cash value")
@@ -123,6 +128,8 @@ class AccountSnapshot(BaseModel):
     unrealized_pnl: float = Field(0.0, description="Total unrealized P&L")
     realized_pnl: float = Field(0.0, description="Total realized P&L (today)")
     total_positions_value: float = Field(0.0, description="Total market value of positions")
+    accrued_cash: float = Field(0.0, description="Accrued interest/dividends on idle cash")
+    currency: str = Field("USD", description="Account base currency reported by IBKR")
     source: str = Field("IBKR", description="Data source")
 
 
@@ -142,7 +149,7 @@ class PositionRecord(BaseModel):
     unrealized_pnl: float = Field(0.0, description="Unrealized P&L")
     unrealized_pnl_pct: float = Field(0.0, description="Unrealized P&L percentage")
     asset_class: AssetClass = Field(AssetClass.EQUITY, description="Asset class")
-    timestamp_utc: datetime = Field(default_factory=datetime.utcnow)
+    timestamp_utc: datetime = Field(default_factory=_utc_naive)
     source: str = Field("IBKR", description="Data source")
 
     @property
@@ -178,7 +185,7 @@ class OrderRecord(BaseModel):
     time_in_force: Optional[str] = Field(None, description="DAY, GTC, IOC, etc.")
     account_id: Optional[str] = None
     reason: Optional[str] = Field(None, description="Reason for order (strategy signal, etc.)")
-    timestamp_utc: datetime = Field(default_factory=datetime.utcnow)
+    timestamp_utc: datetime = Field(default_factory=_utc_naive)
     source: str = Field("IBKR", description="Data source")
 
     @property
@@ -231,7 +238,7 @@ class MarketQuote(BaseModel):
     high: Optional[float] = Field(None, ge=0, description="Day's high")
     low: Optional[float] = Field(None, ge=0, description="Day's low")
     close: Optional[float] = Field(None, ge=0, description="Previous close")
-    timestamp_utc: datetime = Field(default_factory=datetime.utcnow)
+    timestamp_utc: datetime = Field(default_factory=_utc_naive)
     source: str = Field("IBKR", description="Data source")
 
     @property

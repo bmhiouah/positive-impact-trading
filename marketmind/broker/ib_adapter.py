@@ -185,6 +185,17 @@ def _pick_tag(values, tags, default: float = 0.0) -> float:
     return _num(matches[0].value, default) if matches else default
 
 
+def _pick_text_tag(values, tags, default: str = "USD") -> str:
+    """Read a non-numeric account tag such as the base currency."""
+    tag_list = tags if isinstance(tags, (tuple, list)) else (tags,)
+    matches = [v for v in values if v.tag in tag_list]
+    for currency in ("BASE", "USD", "EUR", ""):
+        for value in matches:
+            if value.currency == currency and str(value.value).strip():
+                return str(value.value).strip().upper()
+    return default
+
+
 _ACCOUNT_TAGS: Dict[str, Any] = {
     "net_liquidation": ("NetLiquidation", "$LEDGER-NetLiquidationByCurrency"),
     "total_cash_value": ("TotalCashValue", "$LEDGER-TotalCashBalance"),
@@ -197,6 +208,7 @@ _ACCOUNT_TAGS: Dict[str, Any] = {
     ),
     "unrealized_pnl": ("UnrealizedPnL", "$LEDGER-UnrealizedPnL"),
     "realized_pnl": ("RealizedPnL", "$LEDGER-RealizedPnL"),
+    "accrued_cash": ("AccruedCash", "$LEDGER-AccruedCash"),
 }
 
 
@@ -504,6 +516,9 @@ class IBKRAdapter:
         kwargs = {name: _pick_tag(values, tags)
                   for name, tags in _ACCOUNT_TAGS.items()}
         kwargs["total_positions_value"] = kwargs["gross_position_value"]
+        kwargs["currency"] = _pick_text_tag(
+            values, ("$LEDGER-RealCurrency", "$LEDGER-Currency"), "USD"
+        )
         return AccountSnapshot(
             timestamp_utc=datetime.now(timezone.utc),
             account_id=self._account,
@@ -530,7 +545,56 @@ class IBKRAdapter:
             "UnrealizedPnL": snap.unrealized_pnl,
             "RealizedPnL": snap.realized_pnl,
             "TotalPositionsValue": snap.total_positions_value,
+            "AccruedCash": snap.accrued_cash,
         }
+
+    @property
+    def account_currency(self) -> str:
+        """Base currency of the paper account, read from IBKR tags."""
+        return self.get_account_snapshot().currency
+
+    async def _history_on_loop(self, symbol: str, duration: str,
+                               bar_size: str) -> List[Dict[str, Any]]:
+        """Daily OHLCV bars, executed on the IB event loop."""
+        ib = self._require_ib()
+        contract = Stock(symbol, "SMART", "USD")
+        await ib.qualifyContractsAsync(contract)
+        if not contract.conId:
+            return []
+        bars = await asyncio.wait_for(
+            ib.reqHistoricalDataAsync(
+                contract, endDateTime="", durationStr=duration,
+                barSizeSetting=bar_size, whatToShow="TRADES",
+                useRTH=True, formatDate=1, keepUpToDate=False,
+            ),
+            timeout=max(self._op_timeout, 25.0),
+        )
+        result: List[Dict[str, Any]] = []
+        for bar in bars or []:
+            date = bar.date
+            stamp = date.isoformat() if hasattr(date, "isoformat") else str(date)
+            result.append({
+                "symbol": symbol.upper(),
+                "timestamp": stamp,
+                "open": _num(bar.open), "high": _num(bar.high),
+                "low": _num(bar.low), "close": _num(bar.close),
+                "volume": int(_num(bar.volume)),
+                "bar_size": bar_size, "what_to_show": "TRADES",
+            })
+        return result
+
+    def fetch_historical_bars(self, symbol: str,
+                              duration: Optional[str] = None,
+                              bar_size: Optional[str] = None
+                              ) -> List[Dict[str, Any]]:
+        """Public, thread-safe wrapper around the historical data request."""
+        return self._submit(
+            lambda: self._history_on_loop(
+                symbol, duration or config.HISTORY_DURATION,
+                bar_size or config.HISTORY_BAR_SIZE,
+            ),
+            timeout=max(self._op_timeout, 30.0),
+        )
 
     @staticmethod
     async def _snapshot_ticker(ib: IB, contract) -> Any:
@@ -586,14 +650,18 @@ class IBKRAdapter:
         if not details:
             return {}
         c = details[0].contract
+        detail = details[0]
         return {
             "con_id": c.conId,
             "symbol": c.symbol,
             "exchange": c.primaryExchange or c.exchange,
             "currency": c.currency,
             "multiplier": _num(getattr(c, "multiplier", 1.0), 1.0),
-            "min_tick": _maybe_num(details[0].minTick),
+            "min_tick": _maybe_num(detail.minTick),
             "trading_class": getattr(c, "tradingClass", None),
+            "long_name": getattr(detail, "longName", None),
+            "category": getattr(detail, "category", None),
+            "industry": getattr(detail, "industry", None),
         }
 
     def get_contract_details(self, symbol: str) -> Dict[str, Any]:
