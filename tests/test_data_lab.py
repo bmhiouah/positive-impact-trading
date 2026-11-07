@@ -365,3 +365,94 @@ def test_runner_uses_the_compliance_whitelists() -> None:
     assert not hasattr(live_trading, "_IMPACT_ETFS")
     assert not hasattr(live_trading, "_SPOT_METALS")
     assert "SPUS" in WHITELISTED_ETFS
+
+
+# --- Real-IBKR edge cases found during the first live sync ------------------
+
+class ClosedMarketAdapter(FakeAdapter):
+    """IBKR on a weekend: bid/ask are -1, but last/high/low/volume are real."""
+
+    def __init__(self, last=342.65) -> None:
+        super().__init__(bars=260)
+        self.last = last
+
+    def request_market_data(self, symbol):
+        return {
+            "symbol": symbol, "con_id": 265598,
+            "bid": -1.0, "ask": -1.0, "last": self.last,
+            "bid_size": 0.0, "ask_size": 0.0,
+            "volume": 44_856_713.0, "high": 345.79, "low": 338.30,
+            "close": None,
+        }
+
+
+def test_base_ledger_label_is_never_reported_as_the_currency() -> None:
+    """IBKR sends `$LEDGER-Currency='BASE'` alongside `$LEDGER-RealCurrency='EUR'`."""
+    from types import SimpleNamespace
+
+    from marketmind.broker.ib_adapter import _pick_text_tag
+
+    values = [
+        # Deliberately put the misleading BASE row FIRST, as IBKR did.
+        SimpleNamespace(tag="$LEDGER-Currency", value="BASE", currency="BASE"),
+        SimpleNamespace(tag="$LEDGER-Currency", value="EUR", currency="EUR"),
+        SimpleNamespace(tag="$LEDGER-RealCurrency", value="EUR", currency="BASE"),
+        SimpleNamespace(tag="$LEDGER-RealCurrency", value="EUR", currency="EUR"),
+    ]
+    assert _pick_text_tag(
+        values, ("$LEDGER-RealCurrency", "$LEDGER-Currency"), "USD"
+    ) == "EUR"
+    assert _pick_text_tag(values, ("$LEDGER-Currency",), "USD") == "EUR"
+
+
+def test_closed_market_quote_is_sanitized_and_never_fails_the_sync(lab) -> None:
+    universe, market = lab
+    symbols = universe.symbols()[:2]
+    result = market.sync(ClosedMarketAdapter(), symbols=symbols)
+
+    assert result["ok"] == len(symbols), \
+        "a missing bid/ask must not mark a good history sync as an error"
+    assert all(row["status"] == "ok" for row in result["results"])
+    assert all(row["quote"] for row in result["results"])
+
+    row = next(r for r in market.coverage() if r["symbol"] == symbols[0])
+    assert row["status"] == "ready"
+    assert row["fresh"] is True
+    assert row["last_sync"] is not None
+    assert row["quote"]["bid"] is None       # -1 sentinel dropped
+    assert row["quote"]["ask"] is None
+    assert row["quote"]["last"] == pytest.approx(342.65)
+    assert market.summary()["with_quote"] == len(symbols)
+
+
+def test_quote_with_no_usable_price_is_skipped_without_failing(lab) -> None:
+    universe, market = lab
+    symbols = universe.symbols()[:2]
+    adapter = ClosedMarketAdapter(last=-1.0)
+    adapter.request_market_data = lambda symbol: {
+        "symbol": symbol, "bid": -1.0, "ask": -1.0,
+        "last": -1.0, "close": -1.0, "volume": -1.0,
+    }
+    result = market.sync(adapter, symbols=symbols)
+    assert result["ok"] == len(symbols)
+    assert all(row["status"] == "ok" for row in result["results"])
+    assert all(row["quote"] is False for row in result["results"])
+    assert market.summary()["with_quote"] == 0
+    assert market.coverage()[0]["fresh"] is True
+
+
+def test_baseline_currency_recovers_from_a_base_sentinel(store) -> None:
+    journal = PaperJournal(store)
+    journal.ensure_baseline(_snap(1_001_470.70, currency="BASE"))
+    journal.record(_snap(1_001_527.15, currency="BASE"))
+    assert journal.baseline().currency == "BASE"
+
+    journal.ensure_baseline(_snap(1_001_584.06, currency="EUR"))
+    assert journal.baseline().currency == "EUR"
+    assert journal.baseline().original_capital == pytest.approx(1_001_470.70)
+    assert all(row["currency"] == "EUR" for row in journal.daily_history()), \
+        "all daily rows describe the same single account"
+
+    # A later transient sentinel must not re-poison the journal.
+    journal.record(_snap(1_001_584.06, currency="BASE"))
+    assert journal.latest()["currency"] == "EUR"

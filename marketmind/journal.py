@@ -35,6 +35,13 @@ def _today() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
+def _is_currency_code(value: Optional[str]) -> bool:
+    """A real ISO-4217 code, not IBKR's synthetic ``BASE`` summary label."""
+    text = str(value or "").strip().upper()
+    return (len(text) == 3 and text.isalpha()
+            and text not in {"BASE", "TOTAL", "ALL", "NONE"})
+
+
 @dataclass(frozen=True)
 class Baseline:
     """The original paper money. Written once, never overwritten."""
@@ -239,12 +246,28 @@ class PaperJournal:
         with self._lock:
             existing = self.baseline()
             if existing is not None:
-                # Currency is metadata, not capital: correct a legacy row that
-                # assumed USD before the account base currency was captured.
-                if existing.currency == "USD" and snapshot.currency != "USD":
+                # Currency is metadata, not capital. Early rows assumed USD and
+                # one IBKR tag reports the literal "BASE" label; both are
+                # placeholders, so a real ISO code from the API may correct
+                # them. Once a real code is stored it is never overwritten by a
+                # transient sentinel.
+                reported = str(snapshot.currency or "").strip().upper()
+                placeholder = str(existing.currency or "").strip().upper() in {
+                    "BASE", "USD", "", "NONE"
+                }
+                if (_is_currency_code(reported)
+                        and reported != existing.currency
+                        and placeholder):
                     self.conn.execute(
                         "UPDATE paper_baseline SET currency = ? WHERE id = 1",
-                        (snapshot.currency,),
+                        (reported,),
+                    )
+                    # Every daily row describes this SAME single account; keep
+                    # the journal's currency labels internally consistent.
+                    self.conn.execute(
+                        "UPDATE paper_daily SET currency = ? "
+                        "WHERE currency IS NULL OR UPPER(currency) <> ?",
+                        (reported, reported),
                     )
                     self.conn.commit()
                     existing = self.baseline()
@@ -281,6 +304,12 @@ class PaperJournal:
         with self._lock:
             split = allocation_of(snapshot)
             base = self.baseline()
+            # Never persist IBKR's synthetic "BASE" label: fall back to the
+            # baseline's real code, or the legacy default if none is known yet.
+            currency = str(snapshot.currency or "").strip().upper()
+            if not _is_currency_code(currency):
+                fallback = str(base.currency if base else "").strip().upper()
+                currency = fallback if _is_currency_code(fallback) else "USD"
             original = base.original_capital if base else snapshot.net_liquidation
             current = float(snapshot.net_liquidation)
             total_change = current - float(original)
@@ -321,7 +350,7 @@ class PaperJournal:
                 (_today(), current, split.cash, split.equity, total_change,
                  orders_today, _utcnow(), float(snapshot.accrued_cash or 0.0),
                  realized, unrealized, trading_pnl, interest_pnl,
-                 snapshot.currency or "USD"),
+                 currency),
             )
             c.commit()
 

@@ -174,6 +174,16 @@ def _maybe_num(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
+def _non_negative(value: Any) -> Optional[float]:
+    """IBKR uses ``-1`` / NaN for unavailable ticks (e.g. bid/ask when closed).
+
+    A sentinel is *missing*, not a price: storing it would fail the
+    ``MarketQuote`` model and could anchor a TP/SL bracket at nonsense.
+    """
+    number = _maybe_num(value)
+    return number if number is not None and number >= 0 else None
+
+
 def _pick_tag(values, tags, default: float = 0.0) -> float:
     """Read the first available account tag, preferring BASE/USD currencies."""
     tag_list = tags if isinstance(tags, (tuple, list)) else (tags,)
@@ -185,14 +195,32 @@ def _pick_tag(values, tags, default: float = 0.0) -> float:
     return _num(matches[0].value, default) if matches else default
 
 
+_TEXT_SENTINELS = frozenset({"BASE", "TOTAL", "ALL", "NONE", "N/A", "-"})
+
+
 def _pick_text_tag(values, tags, default: str = "USD") -> str:
-    """Read a non-numeric account tag such as the base currency."""
+    """Read a non-numeric account tag such as the base currency.
+
+    IBKR repeats the ``$LEDGER-*`` tags once per currency plus a synthetic
+    ``BASE`` summary row. On that row ``$LEDGER-Currency`` holds the literal
+    string ``BASE`` while ``$LEDGER-RealCurrency`` holds the real code (``EUR``
+    here). Respect the caller's tag order and discard sentinels, otherwise the
+    summary label is mistaken for a currency and the whole UI shows "BASE".
+    """
     tag_list = tags if isinstance(tags, (tuple, list)) else (tags,)
     matches = [v for v in values if v.tag in tag_list]
-    for currency in ("BASE", "USD", "EUR", ""):
-        for value in matches:
-            if value.currency == currency and str(value.value).strip():
-                return str(value.value).strip().upper()
+
+    def clean(value) -> Optional[str]:
+        text = str(value.value).strip().upper()
+        return text if text and text not in _TEXT_SENTINELS else None
+
+    for tag in tag_list:
+        for currency in ("BASE", "USD", "EUR", ""):
+            for value in matches:
+                if value.tag == tag and value.currency == currency:
+                    text = clean(value)
+                    if text:
+                        return text
     return default
 
 
@@ -627,15 +655,15 @@ class IBKRAdapter:
         return {
             "symbol": symbol,
             "con_id": contract.conId,
-            "bid": _maybe_num(ticker.bid),
-            "ask": _maybe_num(ticker.ask),
-            "last": _maybe_num(ticker.last),
-            "bid_size": _maybe_num(ticker.bidSize),
-            "ask_size": _maybe_num(ticker.askSize),
-            "volume": _maybe_num(ticker.volume),
-            "high": _maybe_num(ticker.high),
-            "low": _maybe_num(ticker.low),
-            "close": _maybe_num(ticker.close),
+            "bid": _non_negative(ticker.bid),
+            "ask": _non_negative(ticker.ask),
+            "last": _non_negative(ticker.last),
+            "bid_size": _non_negative(ticker.bidSize),
+            "ask_size": _non_negative(ticker.askSize),
+            "volume": _non_negative(ticker.volume),
+            "high": _non_negative(ticker.high),
+            "low": _non_negative(ticker.low),
+            "close": _non_negative(ticker.close),
         }
 
     def request_market_data(self, symbol: str) -> Dict[str, Any]:

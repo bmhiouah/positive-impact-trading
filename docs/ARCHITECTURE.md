@@ -128,6 +128,18 @@ market cap from the cockpit into the same `fundamental_data` table the
 compliance gate reads. `_ingest_contract()` preserves manual values and never
 overwrites them with API metadata.
 
+### IBKR quirks observed on the live paper account
+
+| Quirk | Handling |
+|---|---|
+| When the market is closed, `reqMktData` returns `bid = ask = -1` but a valid `last`, `high`, `low` and `volume`. | `_non_negative()` in the adapter and `_clean_tick()` in the ingestion layer turn sentinels into `None`. The real `last` is still stored. A quote with **no** usable price is skipped, never written as a row of nothing. |
+| A missing quote must not fail the batch. | `sync()` treats quotes as best-effort; a quote warning never changes a successful history sync's status to `error`, because `coverage()` derives freshness from that status. |
+| `$LEDGER-Currency` on the synthetic `BASE` summary row contains the literal string `BASE`, while `$LEDGER-RealCurrency` contains the real code (`EUR` here). | `_pick_text_tag()` respects tag order and discards sentinels (`BASE`, `TOTAL`, `ALL`, `NONE`). The journal also refuses to persist anything that is not a 3-letter ISO code. |
+| `AccruedCash` grows on idle cash even with zero positions. | `accrued_cash` is recorded and the residual is shown as `interest_and_other`, never as trading P&L. |
+
+The paper account's base currency is **EUR**. Money formatting is derived from
+the API tag, never hardcoded.
+
 ## Strategy catalogue
 
 `SPECS` declares each rule's `min_bars`, `needs_fundamentals` and family.
@@ -152,14 +164,16 @@ No strategy emits a SELL. Exits are owned by the TP/SL brackets.
 
 `PnlBreakdown` separates `total_change` into `trading_pnl` (realized +
 unrealized) and `interest_and_other`. A flat paper account earns interest on
-idle cash: a `$56.45` rise with zero trades is **interest**, not a phantom gain.
+idle cash: a `€56.45` rise with zero trades is **interest**, not a phantom gain.
 `allocation_of()` uses `GrossPositionValue` as equity and
 `NetLiquidation − equity` as cash, so accrued interest correctly stays in cash.
 
 `_migrate()` adds the newer columns to a first-MVP database, backfills
 `interest_pnl = pnl_vs_original − trading_pnl` on legacy rows (idempotent), and
-`ensure_baseline()` corrects a legacy `currency='USD'` row from a fresh API
-snapshot without ever rewriting the immutable original capital.
+`ensure_baseline()` corrects a placeholder `currency` (`USD` from the first
+MVP, or the `BASE` sentinel) from a fresh API snapshot — and normalises all
+daily rows to the same code — without ever rewriting the immutable original
+capital. Once a real ISO code is stored, a transient sentinel cannot undo it.
 
 The raw data browser on the Journal page is read-only.
 

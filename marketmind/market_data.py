@@ -17,6 +17,7 @@ support — that is what makes the lab data-driven rather than aspirational.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date as date_type
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -110,18 +111,31 @@ class MarketDataService:
 
         for symbol in targets:
             started = _utcnow()
-            status, error, bars_count, quote_ok = "ok", None, 0, False
+            status, error, warning = "ok", None, None
+            bars_count, quote_ok = 0, False
             try:
                 self._ingest_contract(adapter, symbol)
                 bars_count = self._ingest_bars(
                     adapter, symbol, duration, bar_size
                 )
                 total_bars += bars_count
-                if with_quotes:
-                    quote_ok = self._ingest_quote(adapter, symbol)
+                if not bars_count:
+                    warning = "No daily bars returned"
             except Exception as exc:  # noqa: BLE001 - one bad ticker is not fatal
                 status, error = "error", str(exc)
                 logger.warning("Data sync failed for %s: %s", symbol, exc)
+
+            # Quotes are best-effort. A closed market legitimately has no
+            # bid/ask, and that must NOT turn a successful history sync into an
+            # "error": coverage freshness is derived from this status.
+            if status == "ok" and with_quotes:
+                try:
+                    quote_ok = self._ingest_quote(adapter, symbol)
+                    if not quote_ok:
+                        warning = "No usable quote (market closed or no data)"
+                except Exception as exc:  # noqa: BLE001
+                    warning = f"Quote unavailable: {exc}"
+                    logger.warning("Quote unavailable for %s: %s", symbol, exc)
 
             self._store.log_data_update(DataUpdate(
                 symbol=symbol,
@@ -135,7 +149,7 @@ class MarketDataService:
             ))
             results.append({
                 "symbol": symbol, "status": status, "bars": bars_count,
-                "quote": quote_ok, "error": error,
+                "quote": quote_ok, "error": error, "warning": warning,
             })
 
         return {
@@ -213,20 +227,37 @@ class MarketDataService:
             self._store.insert_price_bars(bars)
         return len(bars)
 
+    @staticmethod
+    def _clean_tick(value: Any) -> Optional[float]:
+        """Drop IBKR's ``-1`` / NaN 'no tick' sentinels before validation."""
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) and number >= 0 else None
+
     def _ingest_quote(self, adapter, symbol: str) -> bool:
         quote = adapter.request_market_data(symbol)
         if not quote:
             return False
-        volume = quote.get("volume")
+        clean = self._clean_tick
+        prices = {key: clean(quote.get(key))
+                  for key in ("bid", "ask", "last", "high", "low", "close")}
+        # When the market is closed IBKR still returns a valid `last`, `high`
+        # and `low` with bid/ask = -1. Keep that real snapshot, but never store
+        # a row made entirely of missing values.
+        if not any(prices[key] for key in ("bid", "ask", "last", "close")):
+            logger.info("No usable delayed quote for %s", symbol)
+            return False
+        volume = clean(quote.get("volume"))
         self._store.insert_market_quote(MarketQuote(
             symbol=symbol,
             con_id=quote.get("con_id"),
-            bid=quote.get("bid"), ask=quote.get("ask"),
-            last=quote.get("last"),
-            bid_size=quote.get("bid_size"), ask_size=quote.get("ask_size"),
+            bid=prices["bid"], ask=prices["ask"], last=prices["last"],
+            bid_size=clean(quote.get("bid_size")),
+            ask_size=clean(quote.get("ask_size")),
             volume=int(volume) if volume else None,
-            high=quote.get("high"), low=quote.get("low"),
-            close=quote.get("close"),
+            high=prices["high"], low=prices["low"], close=prices["close"],
             timestamp_utc=_utcnow(), source="IBKR",
         ))
         return True
@@ -331,7 +362,7 @@ class MarketDataService:
             row[0]: row[1]
             for row in c.execute(
                 """SELECT symbol, MAX(completed_at) FROM data_updates
-                   WHERE status = 'ok' GROUP BY symbol"""
+                   WHERE status IN ('ok', 'partial') GROUP BY symbol"""
             )
         }
         fundamentals = {
