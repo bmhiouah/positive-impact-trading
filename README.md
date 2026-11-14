@@ -1,5 +1,7 @@
 # Positive Impact Trading — Paper Lab
 
+<p align="center"><img src="docs/assets/positive-impact-trading-overview.png" alt="Positive Impact Trading overview: ethical principles and the IB Gateway → data → impact screen → strategies → TP/SL bracket pipeline" width="100%"></p>
+
 A deliberately small platform to **experiment with algorithmic paper trading**.
 Everything here is long-only, unleveraged and paper-only. When the project is
 mature, the same ideas can be carried over to real trading.
