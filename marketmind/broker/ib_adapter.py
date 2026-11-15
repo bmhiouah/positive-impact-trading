@@ -106,14 +106,31 @@ def protective_stop(reference: float, stop: float) -> float:
     return level
 
 
+def limit_target(reference: float, target: float) -> float:
+    """A sell-limit that sits strictly above the reference price."""
+    try:
+        ref = float(reference)
+        level = round(float(target), 2)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid target against reference {reference!r}") from exc
+    if not math.isfinite(ref) or ref <= 0 or not math.isfinite(level) or level <= ref:
+        raise ValueError(
+            f"target {target!r} must sit strictly above the reference {reference!r}"
+        )
+    return level
+
+
 def build_protected_entry(ib: IB, action: str, quantity: float,
                           entry_limit: Optional[float], stop_price: float,
-                          account: Optional[str] = None
-                          ) -> Tuple[IBOrder, IBOrder]:
-    """Parent buy plus a GTC stop child. No take-profit.
+                          account: Optional[str] = None,
+                          target_price: Optional[float] = None
+                          ) -> Tuple[IBOrder, IBOrder, Optional[IBOrder]]:
+    """Parent buy, a GTC stop, and an optional GTC target.
 
     The stop is good-til-cancelled because the position is held for weeks.
     A day order would expire and leave the shares unprotected overnight.
+    When a target is present it is transmitted before the stop, and the stop
+    is the leg that releases the bracket.
     """
     parent_id = ib.client.getReqId()
     reverse = "SELL" if action == "BUY" else "BUY"
@@ -125,17 +142,24 @@ def build_protected_entry(ib: IB, action: str, quantity: float,
     parent.orderId = parent_id
     parent.transmit = False
 
+    target = None
+    if target_price and target_price > 0:
+        target = LimitOrder(
+            reverse, quantity, float(target_price),
+            orderId=ib.client.getReqId(), parentId=parent_id, transmit=False,
+        )
     stop_loss = StopOrder(
         reverse, quantity, float(stop_price),
         orderId=ib.client.getReqId(), parentId=parent_id, transmit=True,
     )
-    for leg in (parent, stop_loss):
+    legs = (parent, stop_loss) if target is None else (parent, target, stop_loss)
+    for leg in legs:
         clean_legacy_order_fields(leg)
         leg.tif = "GTC"
         leg.outsideRth = False
         if account:
             leg.account = account
-    return parent, stop_loss
+    return parent, stop_loss, target
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -805,9 +829,12 @@ class IBKRAdapter:
                 "a buy without a stop"
             )
         stop = protective_stop(reference, order_intent.stop_price)
-        parent, stop_loss = build_protected_entry(
+        target_level = None
+        if getattr(order_intent, "target_price", None):
+            target_level = limit_target(reference, order_intent.target_price)
+        parent, stop_loss, target = build_protected_entry(
             ib, order_intent.side.value, order_intent.quantity,
-            order_intent.limit_price, stop, self._account,
+            order_intent.limit_price, stop, self._account, target_level,
         )
 
         errors: List[tuple[int, str]] = []
@@ -818,12 +845,15 @@ class IBKRAdapter:
         ib.errorEvent += on_error
         try:
             parent_trade = ib.placeOrder(contract, parent)
+            if target is not None:
+                ib.placeOrder(contract, target)
             ib.placeOrder(contract, stop_loss)
             logger.info(
-                "ENTRY SENT %s %s %s: id=%s ref=%.2f stop=%.2f (id=%s)",
+                "ENTRY SENT %s %s %s: id=%s ref=%.2f stop=%.2f (id=%s) target=%s",
                 order_intent.side.value, order_intent.symbol,
                 order_intent.quantity, parent.orderId, reference,
                 stop, stop_loss.orderId,
+                f"{target_level:.2f}" if target_level else "none",
             )
             status = await self._await_status(parent_trade, errors, "entry")
             return {
@@ -833,8 +863,8 @@ class IBKRAdapter:
                 "entry_type": parent.orderType,
                 "entry_price": _maybe_num(getattr(parent, "lmtPrice", None)),
                 "reference_price": reference,
-                "take_profit_order_id": None,
-                "take_profit_price": None,
+                "take_profit_order_id": None if target is None else target.orderId,
+                "take_profit_price": target_level,
                 "stop_loss_order_id": stop_loss.orderId,
                 "stop_loss_price": stop,
             }

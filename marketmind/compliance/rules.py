@@ -112,6 +112,7 @@ class OrderIntent:
         is_impact_etf:     True if the symbol is a known impact-screened ETF.
         is_spot_metal:     True if the symbol is a physical spot metal.
         stop_price:        Protective sell-stop for a BUY. Ignored on a close.
+        target_price:      Optional sell-limit. Absent when the stop trails.
     """
 
     symbol: str
@@ -125,6 +126,7 @@ class OrderIntent:
     is_impact_etf: bool = False
     is_spot_metal: bool = False
     stop_price: Optional[float] = None
+    target_price: Optional[float] = None
 
 
 @dataclass(frozen=True)

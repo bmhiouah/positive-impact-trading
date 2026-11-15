@@ -107,14 +107,22 @@ Debt ratios and sectors**. They go into the same `fundamental_data` table the
 compliance gate reads — there is no parallel source of truth. Whitelisted impact
 ETFs are exempt.
 
-The algo sends one rule, from `marketmind/momentum.py`. Buy when the stock's
-own return from 12 months ago to 1 month ago is positive. The stop starts two
-20-day average ranges under the entry and then follows the highest close since
-the entry, minus the same two ranges. It never moves down, and there is no
-take-profit. Each buy risks 0.5% of net liquidation, so the share count is
-that budget divided by the stop distance. A stop-out does not buy the name
-again until that 12-month reading has turned off and come back. The decision
-runs once per New York session, on the last completed daily bar.
+The algo sends one rule at a time. The incumbent, from `marketmind/momentum.py`,
+buys when the stock's own return from 12 months ago to 1 month ago is positive.
+The stop starts two 20-day average ranges under the entry and then follows the
+highest close since the entry. It never moves down, and there is no take-profit.
+Each buy risks 0.5% of net liquidation. A stop-out does not buy the name again
+until that reading has turned off and come back. The decision runs once per
+New York session, on the last completed daily bar.
+
+`marketmind/contest.py` may replace that incumbent. It tries a short grid —
+six entries, four stop distances, a trailing stop or a target at two or three
+times the risk, and an optional 63-session time limit — on the stored daily
+bars. The favorite is chosen on the earlier part of the history. It becomes
+the live rule only when the later part, which the choice did not see, made
+more money than the incumbent. Until the bars cover about two years, the
+incumbent keeps trading. A bar that touches both the stop and the target
+counts as the stop. Five basis points of cost are charged each way.
 
 History is five years of daily bars, because the signal needs one year and a
 check on what came before needs more.
@@ -185,8 +193,9 @@ marketmind/
   compliance/                   ImpactExecutionEngine gate + whitelists
   universe.py                   instruments table: the scalable universe
   market_data.py                IBKR ingestion, coverage, manual fundamentals
-  momentum.py                   the live book: 12-1 signal, ATR stop, size
-  strategy_catalog.py           live rule plus study rules, and replay
+  momentum.py                   incumbent book: 12-1 signal, ATR stop, size
+  contest.py                    walk-forward grid that may replace the incumbent
+  strategy_catalog.py           study rules, and replay
   journal.py                    paper_baseline / paper_daily / paper_orders
   data/                         SQLite store + typed models
   live_trading.py               LiveTradingRunner + CLI entry point

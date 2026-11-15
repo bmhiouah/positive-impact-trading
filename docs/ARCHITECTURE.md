@@ -40,7 +40,8 @@ marketmind/
   universe.py               instruments table: add / pause / metadata
   market_data.py            MarketDataService: sync, coverage, price_series,
                             manual fundamentals, sync_log, summary
-  momentum.py               12-1 signal, ATR stop, risk size (the live book)
+  momentum.py               incumbent 12-1 signal, ATR stop, risk size
+  contest.py                walk-forward grid; may replace the incumbent
   strategy_catalog.py       StrategySpec catalogue, availability, run, replay
   journal.py                paper_baseline / paper_daily / paper_orders,
                             PnlBreakdown, allocation_of, legacy migration
@@ -143,12 +144,18 @@ the API tag, never hardcoded.
 
 ## Strategy catalogue
 
-`marketmind/momentum.py` is the live book. The signal is the return from 252
-sessions ago to 21 sessions ago. The stop is two 20-day average true ranges
-under the highest close since entry, and it only moves up. Size is
+`marketmind/momentum.py` holds the incumbent book. The signal is the return
+from 252 sessions ago to 21 sessions ago. The stop is two 20-day average true
+ranges under the highest close since entry, and it only moves up. Size is
 `floor(equity × 0.5% / stop distance)`, also capped at 20% of equity. A
 stop-out waits until the signal has gone non-positive before a new buy.
-`run_live()` is the only path the runner sends.
+
+`marketmind/contest.py` scores a short grid on the stored daily bars and may
+replace that incumbent. The favorite is chosen on the earlier window. It is
+promoted only when the later window made more money than the incumbent. The
+runner sends `live_rule()`. With fewer than about 400 daily bars the incumbent
+keeps the book. Results are cached in `rule_contest` and recomputed when the
+bars change.
 
 `SPECS` still declares the other rules for study, each with `min_bars`,
 `needs_fundamentals` and family. `availability(coverage)` reports which are

@@ -235,7 +235,7 @@ async def _bracket_round_trip(ib: IB, symbol: str) -> None:
 
     entry_price = round(max(0.01, reference * 0.50), 2)
     sl_price = round(max(0.01, reference * 0.40), 2)
-    parent, stop_loss = build_protected_entry(
+    parent, stop_loss, _target = build_protected_entry(
         ib, "BUY", 1, entry_price, sl_price,
     )
 
