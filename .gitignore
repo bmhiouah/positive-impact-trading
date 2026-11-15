@@ -43,7 +43,8 @@ coverage.xml
 data/*
 !data/.gitkeep
 *.log
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
 
 # Local agent state: memory notes, DB backups, scratch dirs, archived code
 # (kept on disk for this workspace only — not part of the repository)

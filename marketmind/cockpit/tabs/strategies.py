@@ -70,11 +70,10 @@ def _replay_chart(result: Dict[str, Any]) -> go.Figure:
 
 def render(store=None) -> None:
     theme.page_header(
-        "03 / Research",
+        "Research",
         "Strategies",
-        "A catalogue of long-only ideas, each declaring the data it needs. "
-        "Only the strategies your stored IBKR history can support are offered "
-        "to the runner — nothing is guessed and nothing is shorted.",
+        "Long-only rules. A strategy is offered to the runner only when the "
+        "stored history can support it.",
     )
 
     market = get_market()
@@ -103,9 +102,7 @@ def render(store=None) -> None:
         with cols[index % 2]:
             st.markdown(_spec_card(item), unsafe_allow_html=True)
 
-    tabs = st.tabs([
-        "🎯  Signal explorer", "⏪  Historical replay", "⚖️  Compare",
-    ])
+    tabs = st.tabs(["Signal explorer", "Historical replay", "Compare"])
 
     with tabs[0]:
         choices = ["All ready strategies"] + [i["name"] for i in availability]

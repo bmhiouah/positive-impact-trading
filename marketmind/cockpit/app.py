@@ -32,71 +32,71 @@ st.set_page_config(
 theme.apply()
 
 PAGES = {
-    "🏠  Overview": overview.render,
-    "🗂  Data & Universe": data_lab.render,
-    "🧠  Strategies": strategies.render,
-    "🤖  Trading": trading.render,
-    "📒  Journal": journal.render,
+    "Overview": overview.render,
+    "Data & Universe": data_lab.render,
+    "Strategies": strategies.render,
+    "Trading": trading.render,
+    "Journal": journal.render,
 }
 
 # --- Sidebar ----------------------------------------------------------------
 
 with st.sidebar:
     theme.brand()
-    st.markdown("<hr class='pit'/>", unsafe_allow_html=True)
 
     state = sync_status(get_state())
     running = bool(state.algo_running)
     connected = bool(state.ibkr_connected)
-
     st.markdown(
-        "<div class='pit-card' style='min-height:0;padding:13px 15px;margin-bottom:12px'>"
-        f"<div style='display:flex;justify-content:space-between;align-items:center;"
-        f"margin-bottom:9px'><span style='font-size:12px;color:{theme.MUTED}'>Algo</span>"
+        "<div class='pit-card pit-status'>"
+        "<div class='pit-status-row'><span>Algo</span>"
         f"{theme.pill('Running' if running else 'Stopped', 'ok' if running else 'mute')}</div>"
-        f"<div style='display:flex;justify-content:space-between;align-items:center'>"
-        f"<span style='font-size:12px;color:{theme.MUTED}'>IB Gateway</span>"
+        "<div class='pit-status-row'><span>IB Gateway</span>"
         f"{theme.pill('Connected' if connected else 'Idle', 'ok' if connected else 'mute')}</div>"
         + (f"<div class='sub'>Paper account {theme.esc(state.ibkr_account)}</div>"
            if state.ibkr_account else "")
         + "</div>",
         unsafe_allow_html=True,
     )
-
     if state.ibkr_last_error or state.algo_last_error:
         st.caption(state.ibkr_last_error or state.algo_last_error)
 
-    selection = st.radio(
-        "Navigate", list(PAGES.keys()), index=0,
-        label_visibility="collapsed",
-    )
+    if theme.NAV_KEY not in st.session_state:
+        st.session_state[theme.NAV_KEY] = "Overview"
+    st.markdown("<div class='pit-nav-label'>Pages</div>", unsafe_allow_html=True)
+    for name in PAGES:
+        selected = st.session_state[theme.NAV_KEY] == name
+        if st.button(
+            name,
+            key=f"nav-{name}",
+            type="primary" if selected else "secondary",
+            width="stretch",
+        ):
+            theme.go(name)
 
-    st.markdown("<hr class='pit'/>", unsafe_allow_html=True)
     try:
         summary = get_market().summary()
         st.markdown(
-            "<div class='pit-kv'>"
-            f"<b>{summary['instruments']}</b> instruments &nbsp;·&nbsp; "
-            f"<b>{summary['ready']}</b> data-ready<br/>"
-            f"<b>{summary['bars']:,}</b> daily bars &nbsp;·&nbsp; "
-            f"<b>{summary['with_quote']}</b> quotes"
+            "<div class='pit-side-stats'>"
+            f"<div><b>{summary['instruments']}</b><span>instruments</span></div>"
+            f"<div><b>{summary['ready']}</b><span>data-ready</span></div>"
+            f"<div><b>{summary['bars']:,}</b><span>daily bars</span></div>"
+            f"<div><b>{summary['with_quote']}</b><span>quotes</span></div>"
             "</div>",
             unsafe_allow_html=True,
         )
     except Exception:  # noqa: BLE001 - the sidebar must never break the app
         st.caption("Data layer initializing…")
 
-    st.markdown("<hr class='pit'/>", unsafe_allow_html=True)
     theme.footer(
         f"Paper session {config.IBKR_HOST}:{config.IBKR_PORT} · client {config.IBKR_CLIENT_ID}",
-        "Long only · no leverage · TP/SL on every entry",
-        f"Journal {config.DB_PATH}",
+        "Long only · paper · TP/SL",
     )
 
 # --- Page -------------------------------------------------------------------
 
 try:
-    PAGES[selection](get_store())
+    PAGES[st.session_state[theme.NAV_KEY]](get_store())
 except Exception as exc:  # noqa: BLE001 - show a usable error instead of a blank page
     st.error(f"Page error: {exc}")
     st.exception(exc)
