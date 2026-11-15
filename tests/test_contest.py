@@ -72,11 +72,13 @@ def test_a_favorite_that_loses_later_does_not_replace_the_incumbent() -> None:
         rule=Rule("m3", 1.5, None, 63),
         selection_r=12.0, selection_trades=8, selection_dd=1.0,
         confirmation_r=-3.0, confirmation_trades=6, confirmation_dd=4.0,
+        confirmation_ex_best=-4.0,
     )
     incumbent = Score(
         rule=INCUMBENT,
         selection_r=2.0, selection_trades=8, selection_dd=1.0,
         confirmation_r=1.5, confirmation_trades=6, confirmation_dd=1.0,
+        confirmation_ex_best=0.4,
     )
     holder, promoted, _reason = choose([favorite, incumbent])
     assert holder == INCUMBENT
@@ -88,16 +90,53 @@ def test_a_favorite_that_keeps_making_money_becomes_the_live_rule() -> None:
         rule=Rule("trend", 2.5, None, None),
         selection_r=6.0, selection_trades=10, selection_dd=2.0,
         confirmation_r=4.0, confirmation_trades=8, confirmation_dd=1.0,
+        confirmation_ex_best=2.5,
     )
     incumbent = Score(
         rule=INCUMBENT,
         selection_r=3.0, selection_trades=10, selection_dd=2.0,
         confirmation_r=1.0, confirmation_trades=8, confirmation_dd=1.0,
+        confirmation_ex_best=0.4,
     )
     holder, promoted, _reason = choose([favorite, incumbent])
     assert promoted is True
     assert holder == favorite.rule
     assert "Golden cross" in describe(holder)
+
+
+def test_a_thin_later_window_cannot_promote() -> None:
+    favorite = Score(
+        rule=Rule("m6", 2.0, None, None),
+        selection_r=9.0, selection_trades=12, selection_dd=1.0,
+        confirmation_r=3.0, confirmation_trades=3, confirmation_dd=0.5,
+        confirmation_ex_best=1.0,
+    )
+    incumbent = Score(
+        rule=INCUMBENT,
+        selection_r=1.0, selection_trades=12, selection_dd=1.0,
+        confirmation_r=0.2, confirmation_trades=8, confirmation_dd=0.5,
+        confirmation_ex_best=0.1,
+    )
+    holder, promoted, reason = choose([favorite, incumbent])
+    assert holder == INCUMBENT and promoted is False
+    assert "8" in reason
+
+
+def test_one_lucky_later_trade_cannot_promote() -> None:
+    favorite = Score(
+        rule=Rule("breakout", 1.5, 3.0, 63),
+        selection_r=8.0, selection_trades=10, selection_dd=1.0,
+        confirmation_r=2.0, confirmation_trades=8, confirmation_dd=1.0,
+        confirmation_ex_best=-0.5,
+    )
+    incumbent = Score(
+        rule=INCUMBENT,
+        selection_r=1.0, selection_trades=10, selection_dd=1.0,
+        confirmation_r=0.2, confirmation_trades=8, confirmation_dd=1.0,
+        confirmation_ex_best=0.1,
+    )
+    holder, promoted, _reason = choose([favorite, incumbent])
+    assert holder == INCUMBENT and promoted is False
 
 
 def test_contest_keeps_the_incumbent_until_there_are_two_years_of_bars(tmp_path) -> None:

@@ -152,10 +152,19 @@ stop-out waits until the signal has gone non-positive before a new buy.
 
 `marketmind/contest.py` scores a short grid on the stored daily bars and may
 replace that incumbent. The favorite is chosen on the earlier window. It is
-promoted only when the later window made more money than the incumbent. The
+promoted only when the later window has at least eight trades, made more
+money than the incumbent, and still made money with its best trade removed.
+The later window is stored with the report and drawn on Strategies. The
 runner sends `live_rule()`. With fewer than about 400 daily bars the incumbent
 keeps the book. Results are cached in `rule_contest` and recomputed when the
 bars change.
+
+A new buy also has to fit the book: at most four open names, and the open
+stops together at most 2% of the account. `marketmind/risk_gate.py` is that
+check. SEC EDGAR (`marketmind/filings.py`) fills the debt ratio the impact
+screen reads, and stores gross profitability and asset growth beside it. A
+ratio entered by hand is not overwritten. The read runs after a data sync and
+on the first decision of a session.
 
 `SPECS` still declares the other rules for study, each with `min_bars`,
 `needs_fundamentals` and family. `availability(coverage)` reports which are

@@ -45,6 +45,7 @@ from marketmind.journal import PaperJournal
 from marketmind.market_data import MarketDataService
 from marketmind.universe import Universe
 from marketmind import contest, momentum
+from marketmind.risk_gate import admit
 
 logger = logging.getLogger(__name__)
 
@@ -489,9 +490,14 @@ class LiveTradingRunner:
                     "decided": False, "waiting": "history"}
 
         self._refresh_rule(symbols)
+        try:
+            self._market.refresh_filings(symbols)
+        except Exception as exc:  # noqa: BLE001 - a filing miss must not stop the book
+            logger.warning("Filing refresh failed: %s", exc)
         managed = self._manage_open(session)
         active = self._active_symbols()
-        approved = submitted = skipped = blocked = signals = 0
+        approved = submitted = skipped = blocked = signals = held_back = 0
+        held = self._positions()
         for symbol in symbols:
             book = contest.load_book(self._store, symbol)
             if book is None:
@@ -525,6 +531,25 @@ class LiveTradingRunner:
                 logger.info("Skipping %s — the stop risks more than the budget "
                             "on a single share", symbol)
                 continue
+            open_risk = 0.0
+            for row in self._journal.open_trades():
+                if row["symbol"] not in held and row["symbol"] not in active:
+                    continue
+                entry = row.get("entry_price") or row.get("reference_price") or 0
+                stop = row.get("stop_loss_price") or 0
+                shares = float(held.get(row["symbol"], {}).get("position")
+                               or row.get("quantity") or 0)
+                if entry and stop and entry > stop and shares > 0:
+                    open_risk += shares * (float(entry) - float(stop))
+            decision = admit(
+                self._portfolio_value, len(held) + submitted, open_risk,
+                quantity * (reading.price - reading.stop),
+            )
+            if not decision.allowed:
+                held_back += 1
+                skipped += 1
+                logger.info("Holding %s — %s", symbol, decision.reason)
+                continue
             signal = {
                 "symbol": symbol, "stop": reading.stop, "price": reading.price,
                 "target": reading.target, "rationale": reading.rationale,
@@ -548,6 +573,7 @@ class LiveTradingRunner:
             "submitted": submitted,
             "blocked": blocked,
             "skipped": skipped,
+            "held_back": held_back,
             "raised": managed["raised"],
             "exited": managed["exited"],
             "universe": len(symbols),

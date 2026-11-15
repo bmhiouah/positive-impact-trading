@@ -312,6 +312,11 @@ class MarketDataService:
             data = existing.model_copy(update=updates)
         self._store.upsert_fundamental_data(data)
 
+    def refresh_filings(self, symbols: Optional[List[str]] = None) -> Dict[str, str]:
+        """Read SEC annual reports for the universe. Failures stay per symbol."""
+        from marketmind import filings
+        return filings.refresh(self._store, symbols or self._universe.symbols())
+
     def price_series(self, symbol: str,
                      limit: int = 300) -> List[Dict[str, Any]]:
         """Daily OHLCV rows, oldest first, ready for a chart or a dataframe."""

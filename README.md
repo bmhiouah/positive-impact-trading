@@ -122,7 +122,20 @@ bars. The favorite is chosen on the earlier part of the history. It becomes
 the live rule only when the later part, which the choice did not see, made
 more money than the incumbent. Until the bars cover about two years, the
 incumbent keeps trading. A bar that touches both the stop and the target
-counts as the stop. Five basis points of cost are charged each way.
+counts as the stop. Five basis points of cost are charged each way. A
+challenger is promoted only when the later window has at least eight trades
+and still makes money with its best trade removed. The Strategies page shows
+that later window as a curve and as the list of trades.
+
+The book will not hold more than four names, and the open stops together
+cannot risk more than 2% of the account. A signal that would break either
+limit waits.
+
+SEC EDGAR supplies the debt ratio the impact screen reads, plus gross
+profitability and the change in assets. A sync from IBKR, or the button on
+Strategies, reads the filings. A ratio typed by hand is left as typed.
+Whitelisted ETFs are not asked for a filing. JPM is a bank in the seed list:
+once its filing is read, the screen refuses it.
 
 History is five years of daily bars, because the signal needs one year and a
 check on what came before needs more.

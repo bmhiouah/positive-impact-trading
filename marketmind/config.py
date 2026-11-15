@@ -32,6 +32,8 @@ ATR_PERIOD = 20
 ATR_MULTIPLE = 2.0
 RISK_FRACTION = 0.005          # of net liquidation, per trade
 MAX_POSITION_FRACTION = 0.20   # notional cap, so a tiny stop cannot buy the book
+MAX_OPEN_POSITIONS = 4         # names held at once
+MAX_BOOK_RISK = 0.02           # sum of stop-distances, as a fraction of the account
 
 # --- Universe and market data ----------------------------------------------
 # Seed only. The live universe is stored in the `instruments` table and can be
