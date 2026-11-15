@@ -126,7 +126,7 @@ def render(store=None) -> None:
         else:
             theme.empty("No resting order", "A bracket shows up here once it is sent.")
     else:
-        recent = journal.orders(limit=12)
+        recent = journal.trades(limit=12)
         _orders_table(recent, currency)
         if recent:
             st.caption("Latest orders on record. The full list is in the Journal.")

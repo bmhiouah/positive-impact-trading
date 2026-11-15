@@ -128,30 +128,44 @@ def _explanation(pnl: PnlBreakdown, currency: str) -> None:
                   caption="Why there is a change with no trades")
 
 
+_OUTCOME = {
+    "open": "Open",
+    "take_profit": "Take profit",
+    "stop_loss": "Stop",
+}
+
+
 def _orders_table(orders, currency: str) -> None:
     if not orders:
         theme.empty(
-            "No bracket orders yet",
-            "Entries appear here once a strategy has price data, passes the "
-            "impact screen and produces a long BUY. Check Data & Universe to "
-            "see what is still missing.",
+            "No order sent yet",
+            "A row appears here once a bracket has actually been sent.",
         )
         return
     df = pd.DataFrame(orders)
+
+    def _where(row) -> str:
+        return _OUTCOME.get(row.get("outcome") or "open", "Open")
+
     table = pd.DataFrame({
         "When (UTC)": df["timestamp_utc"].str[:19].str.replace("T", " ", regex=False),
         "Symbol": df["symbol"],
-        "Side": df["side"],
-        "Qty": df["quantity"],
-        "Entry id": df["entry_order_id"],
-        "Reference": df["reference_price"].map(
-            lambda v: theme.money(v, currency)),
-        "Take profit": df["take_profit_price"].map(
-            lambda v: theme.money(v, currency)),
-        "Stop loss": df["stop_loss_price"].map(
-            lambda v: theme.money(v, currency)),
-        "Status": df["status"].str.title(),
-        "Strategy / note": df["note"],
+        "Where": df.apply(_where, axis=1),
+        "Entry": df.apply(
+            lambda row: theme.money(
+                row["entry_price"] if row.get("entry_price") else row["reference_price"],
+                currency,
+            ),
+            axis=1,
+        ),
+        "Exit": df["exit_price"].map(
+            lambda value: theme.money_or_dash(value, currency)
+            if pd.notna(value) else "—"
+        ),
+        "Result": df["result_pnl"].map(
+            lambda value: theme.money(value, currency, signed=True)
+            if pd.notna(value) else "—"
+        ),
     })
     st.dataframe(table, width="stretch", hide_index=True)
 

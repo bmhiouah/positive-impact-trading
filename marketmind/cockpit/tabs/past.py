@@ -15,13 +15,11 @@ from marketmind.cockpit.tabs.overview import _change_chart, _explanation, _value
 from marketmind.cockpit.tabs.strategies import render_replay
 
 
-def _outcome(status: str) -> str:
-    text = (status or "").strip().lower()
-    if text == "blocked":
-        return "Blocked"
-    if text in {"error", "failed", "rejected", "cancelled", "canceled"}:
-        return "Failed"
-    return "Sent"
+_OUTCOME = {
+    "open": "Open",
+    "take_profit": "Take profit",
+    "stop_loss": "Stop",
+}
 
 
 def render(store=None) -> None:
@@ -34,7 +32,7 @@ def render(store=None) -> None:
     baseline = journal.baseline()
     pnl = journal.pnl_breakdown(None)
     currency = pnl.currency if pnl else (baseline.currency if baseline else "EUR")
-    orders = journal.orders(limit=500)
+    orders = journal.trades(limit=500)
     history = journal.daily_history()
 
     if not baseline or pnl is None:
@@ -74,35 +72,54 @@ def render(store=None) -> None:
             st.plotly_chart(_change_chart(history, currency),
                             width="stretch", config={"displayModeBar": False})
 
-    theme.section("🧾  Orders by stock", "Sent, blocked, or failed")
+    theme.section("🧾  Orders by stock", "Open, take profit, or stop")
     theme.callout(
-        "A <b>sent</b> row left the lab as a bracket. <b>Blocked</b> means the "
-        "impact screen refused it. <b>Failed</b> means IBKR rejected it. The "
-        "journal does not yet record whether the take-profit or the stop was "
-        "the exit, so this page does not invent a profit per stock.",
+        "<b>Open</b> means the bracket is still at IBKR. <b>Take profit</b> and "
+        "<b>Stop</b> are the leg that filled. The result is the difference from "
+        "the entry, before commission, and it appears the next time the Gateway "
+        "is read.",
     )
     if not orders:
-        theme.empty("No orders yet", "The table stays empty until a bracket is really sent.")
+        theme.empty(
+            "No order sent yet",
+            "The table stays empty until a bracket is really sent.",
+        )
     else:
-        grouped: dict[str, dict[str, int]] = defaultdict(
-            lambda: {"Sent": 0, "Blocked": 0, "Failed": 0}
+        grouped: dict[str, dict[str, float]] = defaultdict(
+            lambda: {"Open": 0, "Take profit": 0, "Stop": 0, "Result": 0.0,
+                     "Closed": 0}
         )
         for order in orders:
-            grouped[order["symbol"]][_outcome(order["status"])] += 1
-        summary = pd.DataFrame([
-            {"Symbol": symbol, **counts, "Total": sum(counts.values())}
+            bucket = grouped[order["symbol"]]
+            label = _OUTCOME.get(order.get("outcome") or "open", "Open")
+            bucket[label] += 1
+            if order.get("result_pnl") is not None:
+                bucket["Result"] += float(order["result_pnl"])
+                bucket["Closed"] += 1
+        st.dataframe(pd.DataFrame([
+            {
+                "Symbol": symbol,
+                "Open": int(counts["Open"]),
+                "Take profit": int(counts["Take profit"]),
+                "Stop": int(counts["Stop"]),
+                "Result": (theme.money(counts["Result"], currency, signed=True)
+                           if counts["Closed"] else "—"),
+            }
             for symbol, counts in sorted(grouped.items())
-        ])
-        st.dataframe(summary, width="stretch", hide_index=True)
+        ]), width="stretch", hide_index=True)
 
         st.dataframe(pd.DataFrame([{
             "When (UTC)": order["timestamp_utc"][:19].replace("T", " "),
             "Symbol": order["symbol"],
-            "Result": _outcome(order["status"]),
-            "Reference": theme.money_or_dash(order["reference_price"], currency),
-            "Take profit": theme.money_or_dash(order["take_profit_price"], currency),
-            "Stop loss": theme.money_or_dash(order["stop_loss_price"], currency),
-            "Note": order["note"] or "",
+            "Where": _OUTCOME.get(order.get("outcome") or "open", "Open"),
+            "Entry": theme.money(
+                order["entry_price"] if order.get("entry_price")
+                else order["reference_price"],
+                currency,
+            ),
+            "Exit": theme.money_or_dash(order.get("exit_price"), currency),
+            "Result": (theme.money(order["result_pnl"], currency, signed=True)
+                       if order.get("result_pnl") is not None else "—"),
         } for order in orders]), width="stretch", hide_index=True)
 
     theme.section("⏪  Replay a rule", "What a strategy would have said on past bars")

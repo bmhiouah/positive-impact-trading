@@ -157,7 +157,7 @@ No strategy emits a SELL. Exits are owned by the TP/SL brackets.
 |---|---|
 | `paper_baseline` | one immutable row: original capital / cash / equity / currency, from the API |
 | `paper_daily` | one upserted row per UTC day: net liquidation, cash, equity, total change, realized/unrealized/trading/interest P&L, accrued cash, currency, order count |
-| `paper_orders` | every bracket: entry / TP / SL order ids and prices, status, note |
+| `paper_orders` | every bracket that was sent. `outcome` is `open` until a take-profit or stop fill is read back. Refusals are not stored |
 
 `record()` only touches `paper_daily`; it never appends to the legacy
 `account_snapshots` / `portfolio_equity` tables.

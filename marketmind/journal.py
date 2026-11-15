@@ -7,8 +7,8 @@ Three small tables hold everything the cockpit needs:
 ``paper_daily``     one row per UTC day: net liquidation, cash, equity invested
                     and P&L against the original money. Re-running the tool on
                     the same day updates that row instead of piling up noise.
-``paper_orders``    one row per bracket order actually sent to IBKR, including
-                    the take-profit and stop-loss order ids and prices.
+``paper_orders``    one row per bracket actually sent. ``outcome`` stays ``open``
+                    until the take-profit or the stop fill is read back.
 
 Capital is never a parameter here. Every number comes from IBKR.
 """
@@ -202,6 +202,12 @@ class PaperJournal:
                 "interest_pnl": "REAL NOT NULL DEFAULT 0",
                 "currency": "TEXT NOT NULL DEFAULT 'USD'",
             },
+            "paper_orders": {
+                "outcome": "TEXT NOT NULL DEFAULT 'open'",
+                "exit_price": "REAL",
+                "result_pnl": "REAL",
+                "closed_at_utc": "TEXT",
+            },
         }
         for table, columns in additions.items():
             existing = {
@@ -220,6 +226,10 @@ class PaperJournal:
                   SET interest_pnl = pnl_vs_original - trading_pnl
                 WHERE interest_pnl = 0
                   AND pnl_vs_original <> trading_pnl"""
+        )
+        # A blocked row never reached IBKR. The journal keeps what was sent.
+        self.conn.execute(
+            "DELETE FROM paper_orders WHERE lower(status) = 'blocked'"
         )
         self.conn.commit()
 
@@ -467,12 +477,95 @@ class PaperJournal:
             """SELECT timestamp_utc, symbol, side, quantity, entry_order_id,
                       entry_type, entry_price, reference_price,
                       take_profit_order_id, take_profit_price,
-                      stop_loss_order_id, stop_loss_price, status, note
+                      stop_loss_order_id, stop_loss_price, status, note,
+                      outcome, exit_price, result_pnl, closed_at_utc
                FROM paper_orders ORDER BY id DESC LIMIT ?""",
             (int(limit),),
         ).fetchall()
         keys = ("timestamp_utc", "symbol", "side", "quantity", "entry_order_id",
                 "entry_type", "entry_price", "reference_price",
                 "take_profit_order_id", "take_profit_price",
-                "stop_loss_order_id", "stop_loss_price", "status", "note")
+                "stop_loss_order_id", "stop_loss_price", "status", "note",
+                "outcome", "exit_price", "result_pnl", "closed_at_utc")
         return [dict(zip(keys, row)) for row in rows]
+
+    def trades(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """Brackets that were actually sent. Refusals and send failures are out."""
+        return [
+            row for row in self.orders(limit=limit)
+            if (row["status"] or "").strip().lower()
+            not in {"blocked", "error", "failed", "rejected"}
+        ]
+
+    def oldest_open_at(self) -> Optional[str]:
+        """UTC timestamp of the oldest bracket that has not closed yet."""
+        row = self.conn.execute(
+            """SELECT MIN(timestamp_utc) FROM paper_orders
+               WHERE lower(COALESCE(outcome, 'open')) = 'open'
+                 AND lower(status) NOT IN
+                     ('blocked', 'error', 'failed', 'rejected')"""
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def settle(self, fills: List[Dict[str, Any]]) -> int:
+        """Close an open bracket when its take-profit or stop fill is known.
+
+        ``fills`` are executions already read from IBKR. Each one needs
+        ``order_id`` and ``price``. The result is ``(exit − entry) × quantity``
+        for a long, before commission. A bracket with no closing fill stays open.
+        """
+        by_order: Dict[int, Dict[str, Any]] = {}
+        for fill in fills:
+            order_id = fill.get("order_id")
+            if order_id is None:
+                continue
+            by_order[int(order_id)] = fill
+        if not by_order:
+            return 0
+
+        rows = self.conn.execute(
+            """SELECT id, quantity, entry_order_id, entry_price, reference_price,
+                      take_profit_order_id, stop_loss_order_id
+               FROM paper_orders
+               WHERE lower(COALESCE(outcome, 'open')) = 'open'
+                 AND lower(status) NOT IN
+                     ('blocked', 'error', 'failed', 'rejected')"""
+        ).fetchall()
+        closed = 0
+        now = _utcnow()
+        with self._lock:
+            for (row_id, quantity, entry_id, entry_price, reference,
+                 take_profit_id, stop_id) in rows:
+                if entry_id is not None and int(entry_id) in by_order:
+                    seen = by_order[int(entry_id)].get("price")
+                    if seen and not entry_price:
+                        entry_price = float(seen)
+                        self.conn.execute(
+                            "UPDATE paper_orders SET entry_price = ? WHERE id = ?",
+                            (entry_price, row_id),
+                        )
+                outcome = None
+                exit_price = None
+                if take_profit_id is not None and int(take_profit_id) in by_order:
+                    outcome = "take_profit"
+                    exit_price = by_order[int(take_profit_id)].get("price")
+                elif stop_id is not None and int(stop_id) in by_order:
+                    outcome = "stop_loss"
+                    exit_price = by_order[int(stop_id)].get("price")
+                if outcome is None or exit_price is None:
+                    continue
+                exit_price = float(exit_price)
+                basis = entry_price if entry_price else reference
+                result = None
+                if basis is not None:
+                    result = (exit_price - float(basis)) * float(quantity or 0.0)
+                self.conn.execute(
+                    """UPDATE paper_orders
+                          SET outcome = ?, exit_price = ?, result_pnl = ?,
+                              closed_at_utc = ?
+                        WHERE id = ?""",
+                    (outcome, exit_price, result, now, row_id),
+                )
+                closed += 1
+            self.conn.commit()
+        return closed

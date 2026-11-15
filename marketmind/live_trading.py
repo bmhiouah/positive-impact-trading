@@ -275,6 +275,22 @@ class LiveTradingRunner:
         self._market.sync(self._adapter)
         self._last_data_sync = now
 
+    def _settle_open_brackets(self) -> None:
+        """Read fills and close any bracket whose take-profit or stop filled."""
+        since_text = self._journal.oldest_open_at()
+        if not since_text:
+            return
+        try:
+            since = datetime.fromisoformat(since_text)
+            if since.tzinfo is None:
+                since = since.replace(tzinfo=timezone.utc)
+            fills = self._adapter.executions_since(since)
+            closed = self._journal.settle(fills)
+            if closed:
+                logger.info("Closed %s bracket(s) from IBKR fills", closed)
+        except Exception as exc:  # noqa: BLE001 - a fill read must not stop the cycle
+            logger.warning("Could not update open brackets: %s", exc)
+
     def _run_trading_cycle(self) -> Dict[str, Any]:
         logger.info("Starting trading cycle at %s",
                     datetime.now(timezone.utc).isoformat())
@@ -283,6 +299,7 @@ class LiveTradingRunner:
         snap = self._adapter.get_account_snapshot()
         self._journal.record(snap)
         self._portfolio_value = float(snap.net_liquidation)
+        self._settle_open_brackets()
 
         # Step 0b: make the lab self-sufficient. The first cycle with an empty
         # or stale price history ingests contracts, daily bars and quotes over
@@ -302,13 +319,13 @@ class LiveTradingRunner:
         entries = strategy_catalog.run_all_ready(symbols, self._store, coverage)
         if not entries:
             return {"signals": 0, "entries": 0, "approved": 0,
-                    "submitted": 0, "skipped": 0,
+                    "submitted": 0, "blocked": 0, "skipped": 0,
                     "universe": len(symbols), "strategies_ready": len(ready)}
 
         final_signals = entries
 
         active = self._active_symbols()
-        approved_count = submitted_count = skipped_count = 0
+        approved_count = submitted_count = skipped_count = blocked_count = 0
 
         for signal in final_signals:
             if signal["symbol"] in active:
@@ -355,17 +372,9 @@ class LiveTradingRunner:
                 continue
 
             if not result.get("approved"):
-                self._journal.record_bracket(
-                    symbol=signal["symbol"], side="BUY", quantity=config.QUANTITY,
-                    entry_order_id=None, entry_type="BRACKET",
-                    entry_price=None, reference_price=0.0,
-                    take_profit_order_id=None, take_profit_price=0.0,
-                    stop_loss_order_id=None, stop_loss_price=0.0,
-                    status="blocked", account_id=snap.account_id,
-                    note=result.get("rejection_reason"),
-                )
-                logger.debug("Blocked for %s: %s", signal["symbol"],
-                             result.get("rejection_reason"))
+                blocked_count += 1
+                logger.info("Not sent for %s: %s", signal["symbol"],
+                            result.get("rejection_reason"))
                 continue
 
             approved_count += 1
@@ -397,6 +406,7 @@ class LiveTradingRunner:
             "entries": len(final_signals),
             "approved": approved_count,
             "submitted": submitted_count,
+            "blocked": blocked_count,
             "skipped": skipped_count,
             "universe": len(symbols),
             "strategies_ready": len(ready),

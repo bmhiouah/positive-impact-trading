@@ -758,6 +758,35 @@ class IBKRAdapter:
             for f in fills
         ]
 
+    async def _executions_since_on_loop(self, since: datetime) -> List[Dict[str, Any]]:
+        """Fills since ``since``, requested on the IB loop."""
+        from ib_insync import ExecutionFilter
+
+        ib = self._require_ib()
+        window = ExecutionFilter()
+        # IB reads this as local gateway time: yyyymmdd-hh:mm:ss.
+        moment = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+        window.time = moment.astimezone(timezone.utc).strftime("%Y%m%d-%H:%M:%S")
+        fills = await ib.reqExecutionsAsync(window)
+        rows = []
+        for fill in fills:
+            execution = fill.execution
+            rows.append({
+                "order_id": execution.orderId,
+                "symbol": fill.contract.symbol,
+                "side": execution.side,
+                "quantity": _num(execution.shares),
+                "price": _num(execution.price),
+            })
+        return rows
+
+    def executions_since(self, since: datetime) -> List[Dict[str, Any]]:
+        """Executions from ``since`` onward. Empty when the Gateway has none."""
+        return self._submit(
+            lambda: self._executions_since_on_loop(since),
+            timeout=self._op_timeout,
+        )
+
     # ------------------------------------------------------------------
     # Order submission — compliance-gated, ALWAYS a TP/SL bracket
     # ------------------------------------------------------------------

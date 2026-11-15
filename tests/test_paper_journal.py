@@ -119,3 +119,51 @@ def test_bracket_orders_are_logged_with_tp_and_sl(journal) -> None:
     assert row["stop_loss_price"] == 97.0
     assert row["entry_order_id"] == 10
     assert journal.latest()["orders_count"] == 1
+    assert row["outcome"] == "open"
+    assert row["exit_price"] is None
+
+
+def test_blocked_orders_are_deleted(journal) -> None:
+    journal.conn.execute(
+        """INSERT INTO paper_orders
+           (timestamp_utc, symbol, side, quantity, reference_price,
+            take_profit_price, stop_loss_price, status)
+           VALUES ('2026-01-01T00:00:00+00:00', 'AAPL', 'BUY', 1, 10, 11, 9,
+                   'blocked')"""
+    )
+    journal.conn.commit()
+    journal._migrate()
+    assert journal.orders() == []
+    assert journal.trades() == []
+
+
+def test_settle_marks_take_profit_and_stop(journal) -> None:
+    journal.record_bracket(
+        symbol="AAPL", side="BUY", quantity=1.0,
+        entry_order_id=10, entry_type="MKT", entry_price=None,
+        reference_price=100.0, take_profit_order_id=11,
+        take_profit_price=105.0, stop_loss_order_id=12,
+        stop_loss_price=97.0, status="Submitted",
+    )
+    journal.record_bracket(
+        symbol="MSFT", side="BUY", quantity=2.0,
+        entry_order_id=20, entry_type="MKT", entry_price=50.0,
+        reference_price=50.0, take_profit_order_id=21,
+        take_profit_price=52.5, stop_loss_order_id=22,
+        stop_loss_price=48.5, status="Submitted",
+    )
+    assert journal.settle([
+        {"order_id": 10, "price": 101.0},
+        {"order_id": 11, "price": 106.0},
+    ]) == 1
+    by_symbol = {row["symbol"]: row for row in journal.trades()}
+    assert by_symbol["AAPL"]["outcome"] == "take_profit"
+    assert by_symbol["AAPL"]["entry_price"] == 101.0
+    assert by_symbol["AAPL"]["result_pnl"] == pytest.approx(5.0)
+    assert by_symbol["MSFT"]["outcome"] == "open"
+
+    assert journal.settle([{"order_id": 22, "price": 48.0}]) == 1
+    by_symbol = {row["symbol"]: row for row in journal.trades()}
+    assert by_symbol["MSFT"]["outcome"] == "stop_loss"
+    assert by_symbol["MSFT"]["result_pnl"] == pytest.approx(-4.0)
+    assert journal.settle([{"order_id": 11, "price": 106.0}]) == 0

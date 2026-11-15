@@ -130,7 +130,7 @@ each date (a rule replay, **not** a full backtest).
 |---|---|
 | `paper_baseline` | one immutable row: original capital / cash / equity / currency, from the API |
 | `paper_daily` | one upserted row per UTC day: net liquidation, cash, equity, total change, trading P&L, interest, accrued cash, currency, order count |
-| `paper_orders` | every bracket: entry / TP / SL order ids and prices, status, note |
+| `paper_orders` | every bracket that was sent. Outcome stays open until the take-profit or the stop fill is read back. Refusals are not stored |
 
 `record()` runs on every trading cycle, so it writes *only* to `paper_daily`
 and never appends to legacy `account_snapshots` / `portfolio_equity`.

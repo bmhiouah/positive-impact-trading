@@ -39,10 +39,10 @@ def _diagnosis(state, journal, coverage) -> None:
         parts.append(f"<b>{missing_debt}</b> instruments have no debt ratio — "
                      "the impact screen blocks those equities. Enter the ratio "
                      "on Strategies")
-    blocked = [o for o in journal.orders(limit=50) if o["status"] == "blocked"]
+    blocked = int(result.get("blocked") or 0)
     if blocked:
-        parts.append(f"<b>{len(blocked)}</b> recent attempts were blocked by "
-                     "the compliance gate (see Journal)")
+        parts.append(f"<b>{blocked}</b> ideas were refused by the impact screen "
+                     "this cycle and were not sent")
     if parts:
         theme.callout(
             "Nothing was sent this cycle because " + "; ".join(parts) + ".",
