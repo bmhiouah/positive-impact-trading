@@ -68,159 +68,148 @@ def _replay_chart(result: Dict[str, Any]) -> go.Figure:
     return fig
 
 
-def render(store=None) -> None:
-    theme.page_header(
-        "03 / Research",
-        "Strategies",
-        "A catalogue of long-only ideas, each declaring the data it needs. "
-        "Only the strategies your stored IBKR history can support are offered "
-        "to the runner — nothing is guessed and nothing is shorted.",
-    )
-
+def _context(store):
     market = get_market()
     coverage = market.coverage()
     symbols = market.universe.symbols()
     availability = strategy_catalog.availability(coverage)
     ready = [item for item in availability if item["ready"]]
+    return market, coverage, symbols, availability, ready
+
+
+def render_ideas(store=None) -> None:
+    """Catalogue and what the rules would buy on the data we have now."""
+    market, coverage, symbols, availability, ready = _context(store)
     current = strategy_catalog.run_all_ready(symbols, store, coverage)
 
     theme.card_row([
-        theme.card("Ready strategies", f"{len(ready)} / {len(availability)}",
-                   "Others show exactly what data is missing"),
-        theme.card("Data-ready instruments",
+        theme.card("Ready to run", f"{len(ready)} / {len(availability)}",
+                   "The others say which data is missing"),
+        theme.card("Instruments ready",
                    f"{sum(1 for r in coverage if r['status'] == 'ready')}",
                    f"of {len(symbols)} active tickers"),
-        theme.card("BUY signals now", f"{len(current)}",
+        theme.card("BUY right now", f"{len(current)}",
                    "Strongest signal kept per symbol"),
-        theme.card("Entry discipline", "3 legs",
+        theme.card("If one is used", "3 legs",
                    f"BUY + TP +{config.TAKE_PROFIT_PCT:.0%} / "
                    f"SL −{config.STOP_LOSS_PCT:.0%}"),
     ])
 
-    theme.section("Catalogue", "Availability is computed from live coverage")
+    theme.section("📚  Catalogue", "Each card says whether the stored data can support it")
     cols = st.columns(2)
     for index, item in enumerate(availability):
         with cols[index % 2]:
             st.markdown(_spec_card(item), unsafe_allow_html=True)
 
-    tabs = st.tabs([
-        "🎯  Signal explorer", "⏪  Historical replay", "⚖️  Compare",
-    ])
-
-    with tabs[0]:
-        choices = ["All ready strategies"] + [i["name"] for i in availability]
-        selected = st.selectbox("Strategy", choices, key="signal_strategy")
-        if selected == "All ready strategies":
-            keys = [i["key"] for i in ready]
-        else:
-            keys = [next(i["key"] for i in availability
-                         if i["name"] == selected)]
-        signals: List[Dict[str, Any]] = []
-        for key in keys:
-            signals.extend(strategy_catalog.run(key, symbols, store))
-        if not signals:
-            theme.empty(
-                "No evaluations yet",
-                "The catalogue needs daily bars before it can produce any "
-                "signal. Sync IBKR data in Data & Universe first.",
-            )
-        else:
-            buys = [s for s in signals if s["action"] == "BUY"]
-            st.caption(
-                f"{len(signals)} evaluations · {len(buys)} BUY · "
-                f"{len(signals) - len(buys)} HOLD · "
-                "HOLD is not sent to the broker."
-            )
-            st.dataframe(_signal_rows(signals), width="stretch", hide_index=True)
-            if not buys:
-                st.caption(
-                    "No BUY right now. Rules are deliberately strict; the "
-                    "runner will re-evaluate every cycle and never force a trade."
-                )
-
-    with tabs[1]:
-        replay_keys = strategy_catalog.replayable_keys()
-        replayable = [i for i in availability if i["key"] in replay_keys]
-        with_bars = [r["symbol"] for r in coverage if r["bars"] > 0]
-        if not with_bars or not replayable:
-            theme.empty("Replay needs price history",
-                        "Sync at least one instrument from IBKR first.")
-        else:
-            c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-            key = c1.selectbox(
-                "Rule", [i["key"] for i in replayable],
-                format_func=strategy_catalog.spec_name,
-                key="replay_key",
-            )
-            symbol = c2.selectbox("Symbol", with_bars, key="replay_symbol")
-            lookback = c3.slider("Days back", 60, 250, 120, 10,
-                                 key="replay_lookback")
-            horizon = c4.slider("Forward days", 1, 20, 5, key="replay_horizon")
-            result = strategy_catalog.replay(key, symbol, store,
-                                             lookback, horizon)
-            if not result.get("supported"):
-                st.info(result.get("reason"))
-            else:
-                avg = result["avg_return"]
-                win = result["win_rate"]
-                theme.card_row([
-                    theme.card("BUY signals", f"{result['count']}",
-                               f"over {result['evaluated']} evaluated days"),
-                    theme.card(f"Avg {horizon}d return",
-                               theme.pct(avg * 100) if avg is not None else "—",
-                               "after each BUY signal",
-                               tone=theme.tone_of(avg)),
-                    theme.card("Positive forward", 
-                               theme.pct(win * 100, signed=False)
-                               if win is not None else "—",
-                               f"{result['measured']} with full forward window"),
-                    theme.card("Best / worst",
-                               (f"{theme.pct(result['best'] * 100)} / "
-                                f"{theme.pct(result['worst'] * 100)}")
-                               if result["best"] is not None else "—",
-                               "per signal, before costs"),
-                ])
-                st.plotly_chart(_replay_chart(result), width="stretch",
-                                config={"displayModeBar": False})
-                if result["signals"]:
-                    st.dataframe(
-                        pd.DataFrame(result["signals"]).rename(columns={
-                            "date": "Date", "price": "Close",
-                            f"return_{horizon}": f"{horizon}d forward return",
-                        }), width="stretch", hide_index=True,
-                    )
-                st.caption(
-                    "Rule replay, not a full backtest: no commissions, "
-                    "slippage, position sizing, TP/SL exits or compliance "
-                    "blocks. Use it to compare ideas, not to forecast P&L."
-                )
-
-    with tabs[2]:
-        counts = []
-        for item in availability:
-            signals_for = strategy_catalog.run(item["key"], symbols, store)
-            counts.append({
-                "Strategy": item["name"],
-                "BUY": sum(1 for s in signals_for if s["action"] == "BUY"),
-                "HOLD": sum(1 for s in signals_for if s["action"] == "HOLD"),
-                "Ready": "Yes" if item["ready"] else "No",
-            })
-        df = pd.DataFrame(counts)
-        st.dataframe(df, width="stretch", hide_index=True)
-        if df["BUY"].sum() or df["HOLD"].sum():
-            fig = go.Figure()
-            fig.add_trace(go.Bar(name="BUY", x=df["Strategy"], y=df["BUY"],
-                                 marker_color=theme.UP))
-            fig.add_trace(go.Bar(name="HOLD", x=df["Strategy"], y=df["HOLD"],
-                                 marker_color=theme.CASH))
-            fig.update_layout(barmode="stack")
-            theme.style_figure(fig, height=320, legend=True)
-            st.plotly_chart(fig, width="stretch",
-                            config={"displayModeBar": False})
-        theme.callout(
-            "On each cycle the runner evaluates every ready strategy, keeps "
-            "the <b>strongest BUY per symbol</b>, applies the impact screen, "
-            "then sends a three-leg bracket. Blocked attempts are written to "
-            "the journal so a missing debt ratio is visible rather than silent.",
-            tone="info", caption="From signal to order",
+    theme.section("🎯  What they would buy now")
+    choices = ["All ready strategies"] + [i["name"] for i in availability]
+    selected = st.selectbox("Strategy", choices, key="signal_strategy")
+    if selected == "All ready strategies":
+        keys = [i["key"] for i in ready]
+    else:
+        keys = [next(i["key"] for i in availability if i["name"] == selected)]
+    signals: List[Dict[str, Any]] = []
+    for key in keys:
+        signals.extend(strategy_catalog.run(key, symbols, store))
+    if not signals:
+        theme.empty(
+            "No evaluations yet",
+            "The catalogue needs daily bars before it can produce any "
+            "signal. Sync the data in the section below.",
         )
+    else:
+        buys = [s for s in signals if s["action"] == "BUY"]
+        st.caption(
+            f"{len(signals)} evaluations · {len(buys)} BUY · "
+            f"{len(signals) - len(buys)} HOLD. HOLD is not sent."
+        )
+        st.dataframe(_signal_rows(signals), width="stretch", hide_index=True)
+
+    _render_compare(store, symbols, availability)
+
+
+def render_replay(store=None) -> None:
+    """Walk one rule over past bars. This is study, not a forecast."""
+    _market, coverage, _symbols, availability, _ready = _context(store)
+    replay_keys = strategy_catalog.replayable_keys()
+    replayable = [i for i in availability if i["key"] in replay_keys]
+    with_bars = [r["symbol"] for r in coverage if r["bars"] > 0]
+    if not with_bars or not replayable:
+        theme.empty(
+            "Replay needs price history",
+            "Sync at least one instrument on Strategies first.",
+        )
+        return
+    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+    key = c1.selectbox(
+        "Rule", [i["key"] for i in replayable],
+        format_func=strategy_catalog.spec_name,
+        key="replay_key",
+    )
+    symbol = c2.selectbox("Symbol", with_bars, key="replay_symbol")
+    lookback = c3.slider("Days back", 60, 250, 120, 10, key="replay_lookback")
+    horizon = c4.slider("Forward days", 1, 20, 5, key="replay_horizon")
+    result = strategy_catalog.replay(key, symbol, store, lookback, horizon)
+    if not result.get("supported"):
+        st.info(result.get("reason"))
+        return
+    avg = result["avg_return"]
+    win = result["win_rate"]
+    theme.card_row([
+        theme.card("BUY signals", f"{result['count']}",
+                   f"over {result['evaluated']} evaluated days"),
+        theme.card(f"Avg {horizon}d return",
+                   theme.pct(avg * 100) if avg is not None else "—",
+                   "after each BUY signal",
+                   tone=theme.tone_of(avg)),
+        theme.card("Positive forward",
+                   theme.pct(win * 100, signed=False) if win is not None else "—",
+                   f"{result['measured']} with a full forward window"),
+        theme.card("Best / worst",
+                   (f"{theme.pct(result['best'] * 100)} / "
+                    f"{theme.pct(result['worst'] * 100)}")
+                   if result["best"] is not None else "—",
+                   "per signal, before costs"),
+    ])
+    st.plotly_chart(_replay_chart(result), width="stretch",
+                    config={"displayModeBar": False})
+    if result["signals"]:
+        st.dataframe(
+            pd.DataFrame(result["signals"]).rename(columns={
+                "date": "Date", "price": "Close",
+                f"return_{horizon}": f"{horizon}d forward return",
+            }), width="stretch", hide_index=True,
+        )
+    st.caption(
+        "A rule replay, not a full backtest. No commissions, size, "
+        "take-profit, stop or compliance block."
+    )
+
+
+def _render_compare(store, symbols, availability) -> None:
+    theme.section("⚖️  Side by side")
+    counts = []
+    for item in availability:
+        signals_for = strategy_catalog.run(item["key"], symbols, store)
+        counts.append({
+            "Strategy": item["name"],
+            "BUY": sum(1 for s in signals_for if s["action"] == "BUY"),
+            "HOLD": sum(1 for s in signals_for if s["action"] == "HOLD"),
+            "Ready": "Yes" if item["ready"] else "No",
+        })
+    df = pd.DataFrame(counts)
+    st.dataframe(df, width="stretch", hide_index=True)
+    if df["BUY"].sum() or df["HOLD"].sum():
+        fig = go.Figure()
+        fig.add_trace(go.Bar(name="BUY", x=df["Strategy"], y=df["BUY"],
+                             marker_color=theme.UP))
+        fig.add_trace(go.Bar(name="HOLD", x=df["Strategy"], y=df["HOLD"],
+                             marker_color=theme.CASH))
+        fig.update_layout(barmode="stack")
+        theme.style_figure(fig, height=320, legend=True)
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    theme.callout(
+        "When the algo runs, it keeps the <b>strongest BUY per symbol</b>, "
+        "applies the impact screen, then sends a bracket. A missing debt "
+        "ratio is written to the journal instead of being skipped in silence.",
+    )

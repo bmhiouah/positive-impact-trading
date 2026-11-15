@@ -28,7 +28,7 @@ def _diagnosis(state, journal, coverage) -> None:
         parts.append("the universe has no instruments")
     if stale:
         parts.append(f"<b>{stale}/{len(coverage)}</b> instruments lack enough "
-                     "fresh daily bars — sync IBKR history in Data & Universe")
+                     "fresh daily bars — sync them on Strategies")
     if result.get("strategies_ready", 0) == 0:
         parts.append("<b>no strategy is data-ready</b>, so no signal can be "
                      "generated")
@@ -38,11 +38,11 @@ def _diagnosis(state, journal, coverage) -> None:
     if missing_debt and result.get("signals", 0) > 0:
         parts.append(f"<b>{missing_debt}</b> instruments have no debt ratio — "
                      "the impact screen blocks those equities. Enter the ratio "
-                     "in Data & Universe → Compliance data")
-    blocked = [o for o in journal.orders(limit=50) if o["status"] == "blocked"]
+                     "on Strategies")
+    blocked = int(result.get("blocked") or 0)
     if blocked:
-        parts.append(f"<b>{len(blocked)}</b> recent attempts were blocked by "
-                     "the compliance gate (see Journal)")
+        parts.append(f"<b>{blocked}</b> ideas were refused by the impact screen "
+                     "this cycle and were not sent")
     if parts:
         theme.callout(
             "Nothing was sent this cycle because " + "; ".join(parts) + ".",
@@ -52,11 +52,11 @@ def _diagnosis(state, journal, coverage) -> None:
 
 def render(store=None) -> None:
     theme.page_header(
-        "04 / Execution",
+        "Execution",
         "Trading",
-        "One button opens the IB Gateway session, reads the capital from the "
-        "API, records the journal and only then starts the long-only loop. "
-        "Every entry leaves the account protected by a TP/SL bracket.",
+        "Start opens the paper session, reads capital from the account, and "
+        "only then runs the loop. Every entry is a buy with a take-profit "
+        "and a stop-loss.",
     )
 
     state = sync_status(get_state())
@@ -68,13 +68,13 @@ def render(store=None) -> None:
     control, status = st.columns([2, 3])
     with control:
         b1, b2 = st.columns(2)
-        if b1.button("▶  Start Algo", disabled=state.algo_running,
-                     type="primary", use_container_width=True):
+        if b1.button("Start Algo", disabled=state.algo_running,
+                     type="primary", width="stretch", key="start_algo"):
             with st.spinner("Connect → read capital → start trading…"):
                 start_algo()
             st.rerun()
-        if b2.button("⏹  Stop Algo", disabled=not state.algo_running,
-                     use_container_width=True):
+        if b2.button("Stop Algo", disabled=not state.algo_running,
+                     width="stretch", key="stop_algo"):
             stop_algo()
             st.rerun()
         st.caption(
@@ -119,24 +119,6 @@ def render(store=None) -> None:
         )
     _diagnosis(state, journal, coverage)
 
-    # --- live session detail -------------------------------------------------
-    theme.section("Session detail", "Fixed by design — no settings")
-    st.markdown(
-        "<div class='pit-card' style='min-height:0'>"
-        "<div class='label'>Connection & lifecycle</div>"
-        "<div class='pit-kv'>"
-        f"<b>Gateway</b> {config.IBKR_HOST}:{config.IBKR_PORT} "
-        f"(paper) · client id <b>{config.IBKR_CLIENT_ID}</b><br/>"
-        f"<b>Market data</b> delayed (type {config.MARKET_DATA_TYPE}) · "
-        f"<b>Capital</b> read from NetLiquidation, never a parameter<br/>"
-        "<b>Start</b> stop previous run → connect → account snapshot → "
-        "journal baseline → start trading thread<br/>"
-        "<b>Order</b> parent BUY (transmit=False) + SELL LIMIT take profit + "
-        "SELL STOP stop loss (transmit=True)"
-        "</div></div>",
-        unsafe_allow_html=True,
-    )
-
     # --- open orders / positions --------------------------------------------
     if state.algo_running and state.algo_runner is not None:
         theme.section("Live at IBKR", "Read through the open session")
@@ -164,14 +146,28 @@ def render(store=None) -> None:
     else:
         theme.section("Last bracket orders", "From the journal")
         orders = journal.orders(limit=10)
+        baseline = journal.baseline()
+        currency = baseline.currency if baseline else "EUR"
         if orders:
             st.dataframe(pd.DataFrame([{
                 "When (UTC)": o["timestamp_utc"][:19].replace("T", " "),
-                "Symbol": o["symbol"], "Status": o["status"],
-                "Reference": o["reference_price"],
-                "Take profit": o["take_profit_price"],
-                "Stop loss": o["stop_loss_price"],
+                "Symbol": o["symbol"], "Status": str(o["status"] or "").title(),
+                "Reference": theme.money_or_dash(o["reference_price"], currency),
+                "Take profit": theme.money_or_dash(o["take_profit_price"], currency),
+                "Stop loss": theme.money_or_dash(o["stop_loss_price"], currency),
             } for o in orders]), width="stretch", hide_index=True)
         else:
             theme.empty("No orders sent yet",
                         "The journal records submissions, compliance blocks and errors.")
+
+    with st.expander("How this session works"):
+        st.markdown(
+            f"Gateway **{config.IBKR_HOST}:{config.IBKR_PORT}** (paper), "
+            f"client id **{config.IBKR_CLIENT_ID}**. Market data is delayed "
+            f"(type {config.MARKET_DATA_TYPE}). Capital is read from "
+            "NetLiquidation, never typed in. Start tears down any previous "
+            "run, connects, writes the journal, then starts the trading "
+            "thread. Each entry is a parent BUY plus a take-profit limit and "
+            "a stop-loss stop. Stopping the algo leaves those brackets resting "
+            "at IBKR."
+        )

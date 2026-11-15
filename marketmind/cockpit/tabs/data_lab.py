@@ -17,6 +17,19 @@ from marketmind.cockpit import theme
 from marketmind.cockpit.state import get_market, get_state, sync_data, sync_status
 
 
+def _quote_pair(quote: Dict[str, Any]) -> str:
+    if not quote:
+        return "—"
+
+    def _px(value: Any) -> str:
+        return f"{value:,.2f}" if isinstance(value, (int, float)) else "—"
+
+    bid, ask = quote.get("bid"), quote.get("ask")
+    if bid is None and ask is None:
+        return "—"
+    return f"{_px(bid)} / {_px(ask)}"
+
+
 def _status_pill(status: str) -> str:
     return {"ready": "Ready", "partial": "Partial", "empty": "No data"}.get(
         status, status
@@ -35,10 +48,7 @@ def _coverage_table(rows: List[Dict[str, Any]]) -> pd.DataFrame:
             "Daily bars": row["bars"],
             "Last close": (f"{row['last_close']:,.2f}"
                            if row.get("last_close") else "—"),
-            "Bid / Ask": (
-                f"{quote.get('bid') or 0:,.2f} / {quote.get('ask') or 0:,.2f}"
-                if quote else "—"
-            ),
+            "Bid / Ask": _quote_pair(quote),
             "Debt data": "Yes" if row.get("fundamentals") else "Missing",
             "Last sync": (str(row.get("last_sync") or "—")[:16]
                           .replace("T", " ")),
@@ -88,8 +98,8 @@ def _volume_chart(series: List[Dict[str, Any]]) -> go.Figure:
 def _render_sync(state) -> None:
     left, right = st.columns([1, 3])
     with left:
-        if st.button("⬇  Sync from IBKR", disabled=state.algo_running,
-                     type="primary", use_container_width=True):
+        if st.button("Sync from IBKR", disabled=state.algo_running,
+                     type="primary", width="stretch", key="sync_ibkr"):
             with st.spinner("One connection: contracts → daily bars → quotes…"):
                 sync_data()
             st.rerun()
@@ -262,17 +272,16 @@ def _render_price_explorer(market, coverage) -> None:
                     config={"displayModeBar": False})
     st.caption(
         f"{len(series)} daily bars · delayed market data (type "
-        f"{config.MARKET_DATA_TYPE}) · rising candles red / falling green."
+        f"{config.MARKET_DATA_TYPE}). Rising candles are green, falling candles are red."
     )
 
 
 def render(store=None) -> None:
     theme.page_header(
-        "02 / Data",
+        "Data",
         "Data & Universe",
-        "Gather what the IB Gateway API can actually provide, keep it tidy, and "
-        "extend the universe without touching code. Strategies only run on data "
-        "that is really here.",
+        "What the Gateway has actually delivered, and the tickers this lab "
+        "is allowed to trade.",
     )
 
     state = sync_status(get_state())
@@ -296,8 +305,7 @@ def render(store=None) -> None:
     _render_sync(state)
 
     tabs = st.tabs([
-        "📊  Coverage", "🌍  Universe", "🛡  Compliance data",
-        "📈  Price explorer", "🧾  Sync log",
+        "Coverage", "Universe", "Compliance", "Prices", "Sync log",
     ])
     with tabs[0]:
         if coverage:
@@ -310,7 +318,7 @@ def render(store=None) -> None:
                 "connection when it starts."
             )
         else:
-            theme.empty("The universe is empty", "Add a ticker in the Universe tab.")
+            theme.empty("The universe is empty", "Add a ticker below.")
     with tabs[1]:
         _render_universe(market)
     with tabs[2]:

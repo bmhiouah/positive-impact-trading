@@ -41,12 +41,16 @@ def _daily_frame(rows, currency: str) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def _price(value, currency: str) -> str:
+    return theme.money_or_dash(value, currency)
+
+
 def render(store=None) -> None:
     theme.page_header(
-        "05 / Records",
+        "Records",
         "Journal",
-        "The clean, append-only record of this lab: original paper money, one "
-        "observation per UTC day, and every TP/SL bracket sent to IBKR.",
+        "Original paper money, one row per UTC day, and every bracket sent "
+        "or blocked.",
     )
 
     journal = get_journal()
@@ -65,10 +69,13 @@ def render(store=None) -> None:
                    "one upserted row per UTC day"),
         theme.card("Bracket orders", f"{len(orders)}",
                    "submissions, blocks and errors"),
-        theme.card("Database", "SQLite", config.DB_PATH),
+        theme.card("Last observation",
+                   daily[-1]["date_utc"] if daily else "—",
+                   "UTC day"),
     ])
+    st.caption(f"Stored in `{config.DB_PATH}`.")
 
-    tabs = st.tabs(["📅  Daily journal", "🧾  Orders", "🗄  Raw data browser"])
+    tabs = st.tabs(["Daily journal", "Orders", "Raw data"])
 
     with tabs[0]:
         theme.section("Daily evolution", "Trading P&L is never mixed with interest")
@@ -94,12 +101,12 @@ def render(store=None) -> None:
                 "Qty": o["quantity"],
                 "Entry id": o["entry_order_id"],
                 "Entry": o["entry_type"],
-                "Reference": o["reference_price"],
+                "Reference": _price(o["reference_price"], currency),
                 "TP id": o["take_profit_order_id"],
-                "Take profit": o["take_profit_price"],
+                "Take profit": _price(o["take_profit_price"], currency),
                 "SL id": o["stop_loss_order_id"],
-                "Stop loss": o["stop_loss_price"],
-                "Status": o["status"],
+                "Stop loss": _price(o["stop_loss_price"], currency),
+                "Status": str(o["status"] or "").title(),
                 "Note": o["note"],
             } for o in orders]), width="stretch", hide_index=True)
             st.caption(

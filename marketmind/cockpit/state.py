@@ -175,6 +175,21 @@ def start_algo(
     logger.info("Start Algo succeeded: %s", info)
 
 
+def _refresh_trade_outcomes(adapter) -> None:
+    """Close brackets whose take-profit or stop has filled. Never raises."""
+    journal = get_journal()
+    since_text = journal.oldest_open_at()
+    if not since_text:
+        return
+    try:
+        since = datetime.fromisoformat(since_text)
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        journal.settle(adapter.executions_since(since))
+    except Exception as exc:  # noqa: BLE001 - the account read still stands
+        logger.warning("Could not update open brackets: %s", exc)
+
+
 def refresh_snapshot() -> bool:
     """Read a fresh account snapshot without starting the algo.
 
@@ -196,6 +211,7 @@ def refresh_snapshot() -> bool:
         journal = get_journal()
         journal.ensure_baseline(snapshot)
         journal.record(snapshot)
+        _refresh_trade_outcomes(adapter)
         state.live_snapshot = snapshot
         state.snapshot_at = datetime.now(timezone.utc).isoformat()
         state.ibkr_account = snapshot.account_id
@@ -230,6 +246,7 @@ def sync_data(symbols: Optional[list[str]] = None) -> bool:
         journal = get_journal()
         journal.ensure_baseline(snapshot)
         journal.record(snapshot)
+        _refresh_trade_outcomes(adapter)
         result = get_market().sync(adapter, symbols=symbols)
         state.last_sync = result
         state.sync_error = None

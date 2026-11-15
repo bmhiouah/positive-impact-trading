@@ -48,10 +48,10 @@ marketmind/
     models.py               typed snapshots, bars, quotes, fundamentals
   live_trading.py           LiveTradingRunner + CLI
   cockpit/
-    app.py                  5-page shell; Overview first
-    theme.py                shared CSS, KPI cards, pills, callouts, chart styling
+    app.py                  three pages: Trading, Strategies, Journal
+    theme.py                shared CSS, KPI cards, callouts, chart styling
     state.py                process-wide runner state, Start/Stop, refresh, sync
-    tabs/                   overview · data_lab · strategies · trading · journal
+    tabs/                   present · future · past, plus the sections they reuse
 scripts/
   run_cockpit.py            single cockpit launcher
   ib_connection_probe.py    standalone connect → disconnect → reconnect + bracket
@@ -157,7 +157,7 @@ No strategy emits a SELL. Exits are owned by the TP/SL brackets.
 |---|---|
 | `paper_baseline` | one immutable row: original capital / cash / equity / currency, from the API |
 | `paper_daily` | one upserted row per UTC day: net liquidation, cash, equity, total change, realized/unrealized/trading/interest P&L, accrued cash, currency, order count |
-| `paper_orders` | every bracket: entry / TP / SL order ids and prices, status, note |
+| `paper_orders` | every bracket that was sent. `outcome` is `open` until a take-profit or stop fill is read back. Refusals are not stored |
 
 `record()` only touches `paper_daily`; it never appends to the legacy
 `account_snapshots` / `portfolio_equity` tables.
@@ -212,6 +212,6 @@ never produces a blank screen.
 * `MARKETMIND_IB_INTEGRATION=1` — opt-in live Gateway tests.
 * `scripts/ib_connection_probe.py --all` — connect / disconnect / reconnect,
   data and a cancelled 3-leg bracket.
-* Streamlit `AppTest` — all five pages against both an empty and a populated DB.
+* Streamlit `AppTest` — Trading, Strategies and Journal against both an empty and a populated DB.
 
 Runtime databases, `.workbuddy-ai/` state and archives are git-ignored.

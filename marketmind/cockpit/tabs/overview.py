@@ -34,9 +34,9 @@ def _donut(cash: float, equity: float, currency: str) -> go.Figure:
     fig = go.Figure(
         data=[go.Pie(
             labels=labels, values=values, hole=0.62, sort=False,
-            marker=dict(colors=colors, line=dict(color="#FFFFFF", width=3)),
+            marker=dict(colors=colors, line=dict(color=theme.SURFACE, width=3)),
             textinfo="label+percent",
-            textfont=dict(size=12, color=theme.INK),
+            textfont=dict(size=12, color="#FFFFFF"),
             hovertemplate=(
                 "%{label}: " + theme.symbol(currency)
                 + "%{value:,.2f} (%{percent})<extra></extra>"
@@ -63,10 +63,10 @@ def _value_chart(history, original: float, currency: str) -> go.Figure:
         x=[r["date_utc"] for r in history],
         y=[r["net_liquidation"] for r in history],
         mode="lines+markers", name="Net liquidation",
-        line=dict(color=theme.BRAND, width=2.5),
-        marker=dict(size=8, color=theme.BRAND,
-                    line=dict(color="#FFFFFF", width=2)),
-        fill="tozeroy", fillcolor="rgba(29,78,216,.06)",
+        line=dict(color=theme.UP, width=2.5),
+        marker=dict(size=8, color=theme.UP,
+                    line=dict(color=theme.PAGE, width=2)),
+        fill="tozeroy", fillcolor="rgba(52,211,153,.10)",
         hovertemplate="%{x}<br>" + theme.symbol(currency)
                       + "%{y:,.2f}<extra></extra>",
     ))
@@ -128,41 +128,80 @@ def _explanation(pnl: PnlBreakdown, currency: str) -> None:
                   caption="Why there is a change with no trades")
 
 
+_OUTCOME = {
+    "open": "Open",
+    "take_profit": "Take profit",
+    "stop_loss": "Stop",
+}
+
+
 def _orders_table(orders, currency: str) -> None:
     if not orders:
         theme.empty(
-            "No bracket orders yet",
-            "Entries appear here once a strategy has price data, passes the "
-            "impact screen and produces a long BUY. Check Data & Universe to "
-            "see what is still missing.",
+            "No order sent yet",
+            "A row appears here once a bracket has actually been sent.",
         )
         return
     df = pd.DataFrame(orders)
+
+    def _where(row) -> str:
+        return _OUTCOME.get(row.get("outcome") or "open", "Open")
+
     table = pd.DataFrame({
         "When (UTC)": df["timestamp_utc"].str[:19].str.replace("T", " ", regex=False),
         "Symbol": df["symbol"],
-        "Side": df["side"],
-        "Qty": df["quantity"],
-        "Entry id": df["entry_order_id"],
-        "Reference": df["reference_price"].map(
-            lambda v: theme.money(v, currency)),
-        "Take profit": df["take_profit_price"].map(
-            lambda v: theme.money(v, currency)),
-        "Stop loss": df["stop_loss_price"].map(
-            lambda v: theme.money(v, currency)),
-        "Status": df["status"].str.title(),
-        "Strategy / note": df["note"],
+        "Where": df.apply(_where, axis=1),
+        "Entry": df.apply(
+            lambda row: theme.money(
+                row["entry_price"] if row.get("entry_price") else row["reference_price"],
+                currency,
+            ),
+            axis=1,
+        ),
+        "Exit": df["exit_price"].map(
+            lambda value: theme.money_or_dash(value, currency)
+            if pd.notna(value) else "—"
+        ),
+        "Result": df["result_pnl"].map(
+            lambda value: theme.money(value, currency, signed=True)
+            if pd.notna(value) else "—"
+        ),
     })
     st.dataframe(table, width="stretch", hide_index=True)
 
 
+def _nudge(state, summary) -> None:
+    """One next step, only when the lab cannot trade yet."""
+    if state.algo_running:
+        return
+    instruments = int(summary.get("instruments") or 0)
+    ready = int(summary.get("ready") or 0)
+    if instruments and ready:
+        return
+    if instruments == 0:
+        text = (
+            "The universe is empty, so there is nothing to price or trade. "
+            "Add a ticker, then sync it from IBKR."
+        )
+    else:
+        text = (
+            f"<b>{ready} of {instruments}</b> instruments have enough fresh "
+            "daily bars. Sync from IBKR before a strategy can run."
+        )
+    copy, action = st.columns([4.4, 1.2], vertical_alignment="center")
+    with copy:
+        theme.callout(text, tone="warn", caption="Next")
+    with action:
+        if st.button("Open Data", width="stretch", key="overview_open_data"):
+            theme.go("Data & Universe")
+
+
 def render(store=None) -> None:
     theme.page_header(
-        "01 / Portfolio",
+        "Portfolio",
         "Overview",
-        "The original paper money recorded from IBKR, where it sits today, and "
-        "the exact reason its value changed — trading gains are never mixed "
-        "with interest on idle cash.",
+        "Original paper money, where it sits, and whether the change came "
+        "from trading or from interest on idle cash.",
     )
 
     state = sync_status(get_state())
@@ -176,10 +215,10 @@ def render(store=None) -> None:
     currency = pnl.currency if pnl else (baseline.currency if baseline else "EUR")
 
     # --- daily check-in ------------------------------------------------------
-    action, note = st.columns([1, 4])
+    action, note = st.columns([1.15, 3.6], vertical_alignment="center")
     with action:
-        if st.button("🔄  Read account from IBKR",
-                     disabled=state.algo_running, use_container_width=True):
+        if st.button("Read account", disabled=state.algo_running,
+                     type="primary", width="stretch", key="read_account"):
             with st.spinner("Connecting → reading account → disconnecting…"):
                 refresh_snapshot()
             st.rerun()
@@ -194,17 +233,21 @@ def render(store=None) -> None:
             st.caption(
                 f"Original paper money recorded {baseline.recorded_at_utc[:10]} "
                 f"from account {baseline.account_id or '—'}. "
-                "Press the button for a fresh API read."
+                "Read account pulls a fresh snapshot."
             )
 
     if not baseline or pnl is None:
         theme.empty(
-            "No baseline recorded yet",
-            "Read the account from IBKR (or start the algo) once. The original "
-            "paper money is read from the API and stored forever, never entered "
-            "by hand.",
+            "No paper money recorded yet",
+            "Read the account, or start the algo. Both take the figure from "
+            "IBKR and keep it.",
         )
         return
+
+    try:
+        _nudge(state, get_market().summary())
+    except Exception:  # noqa: BLE001 - a hint must not blank the portfolio
+        pass
 
     # --- headline numbers ----------------------------------------------------
     theme.card_row([
@@ -287,11 +330,14 @@ def render(store=None) -> None:
 
     # --- activity ------------------------------------------------------------
     theme.section(
-        "Trades done",
-        f"Every entry: BUY + take profit +{config.TAKE_PROFIT_PCT:.0%} / "
+        "Latest brackets",
+        f"BUY + take profit +{config.TAKE_PROFIT_PCT:.0%} / "
         f"stop loss −{config.STOP_LOSS_PCT:.0%}",
     )
-    _orders_table(journal.orders(limit=50), currency)
+    recent = journal.orders(limit=8)
+    _orders_table(recent, currency)
+    if recent:
+        st.caption("Latest 8. The Journal page keeps the full list.")
 
     if state.algo_running and state.algo_runner is not None:
         try:
@@ -303,14 +349,3 @@ def render(store=None) -> None:
         except Exception as exc:  # noqa: BLE001
             st.caption(f"Could not read positions: {exc}")
 
-    # --- readiness hint ------------------------------------------------------
-    try:
-        summary = get_market().summary()
-        if summary["ready"] == 0 and pnl.trades_count == 0:
-            st.caption(
-                f"Data readiness: {summary['ready']}/{summary['instruments']} "
-                "instruments have enough fresh history for signals. "
-                "Open Data & Universe to sync IBKR history."
-            )
-    except Exception:  # noqa: BLE001
-        pass
