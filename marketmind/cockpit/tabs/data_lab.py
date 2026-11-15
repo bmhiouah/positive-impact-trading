@@ -318,7 +318,7 @@ def render(store=None) -> None:
                 "connection when it starts."
             )
         else:
-            theme.empty("The universe is empty", "Add a ticker in the Universe tab.")
+            theme.empty("The universe is empty", "Add a ticker below.")
     with tabs[1]:
         _render_universe(market)
     with tabs[2]:

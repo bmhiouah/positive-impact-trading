@@ -54,7 +54,7 @@ client occupying client id 1.
 ## Running it
 
 ```bash
-# Cockpit (Overview is the first page)
+# Cockpit (Present is the first page)
 python scripts/run_cockpit.py                 # or: streamlit run marketmind/cockpit/app.py
 
 # Bot on its own (Ctrl+C to stop)
@@ -69,31 +69,28 @@ Use the project interpreter — the default `python3` has no `ib_insync`:
 
 ### The daily routine
 
-1. **🗂 Data & Universe → ⬇ Sync from IBKR.** One short-lived session pulls
-   contract metadata, daily bars and delayed quotes for every active ticker,
-   refreshes the account snapshot and writes the journal row. Do this once a day.
-2. **🏠 Overview.** Original paper money, cash/equity donut, and the exact
-   breakdown of why the account value moved.
-3. **🤖 Trading → ▶ Start Algo.** Connects first, reads capital from the API,
-   writes the baseline/day row, then starts the loop. The first cycle also
-   refreshes stale data **over that same connection** — a second session is
-   never opened.
-4. **📒 Journal.** One row per UTC day and every bracket sent, with a CSV export.
+1. **Future → Sync from IBKR.** One short-lived session pulls contract
+   metadata, daily bars and delayed quotes for every active ticker, refreshes
+   the account snapshot and writes the journal row. Do this once a day.
+2. **Present → Start algo.** Connects first, reads capital from the API,
+   writes the baseline and the day row, then starts the loop. The first cycle
+   also refreshes stale data **over that same connection**. Open positions and
+   orders sent this session stay on this page.
+3. **Past.** How the paper capital moved, trading separated from interest,
+   and every bracket grouped by stock.
 
-Only one connection may exist at a time: manual sync and `Read account from
-IBKR` are disabled while the algo is running, and the runner does its own
-refresh instead. Stopping the algo leaves resting TP/SL brackets at IBKR, so
-open positions stay protected.
+Only one connection may exist at a time: manual sync and Read account are
+disabled while the algo is running, and the runner does its own refresh
+instead. Stopping the algo leaves resting TP/SL brackets at IBKR, so open
+positions stay protected.
 
-## The five pages
+## The three pages
 
-| Page | Purpose |
+| Page | What it is for |
 |---|---|
-| 🏠 **Overview** | Net liquidation, total change split into **trading P&L** vs **interest & other**, cash/equity donut, daily curves, trades done, open positions |
-| 🗂 **Data & Universe** | Coverage per instrument, add/pause tickers, manual compliance data, candlestick price explorer, sync log |
-| 🧠 **Strategies** | Catalogue with per-strategy data requirements, signal explorer, historical replay, comparison |
-| 🤖 **Trading** | Start/Stop Algo, live status, an explicit diagnosis when no trade is sent, resting orders/positions |
-| 📒 **Journal** | Daily journal (CSV export), every bracket with TP/SL ids, read-only raw table browser |
+| **Present** | Now. Start and stop the algo, read the account, see open positions and the orders as they go out |
+| **Future** | Strategies that might be used later, what each one still needs, the universe, debt ratios and price history |
+| **Past** | How the capital evolved, orders by stock, a rule replay on past bars, and the daily journal |
 
 ## Data and strategies
 
@@ -105,8 +102,8 @@ active instrument with bar count, freshness, quote, fundamentals and status
 (`ready` / `partial` / `empty`).
 
 IBKR **refuses `reqFundamentalData` on this paper account (error 10358)**, so
-debt-to-market-cap ratios and excluded sectors are entered from **Data &
-Universe → Compliance data**. They go into the same `fundamental_data` table the
+debt-to-market-cap ratios and excluded sectors are entered from **Future →
+Debt ratios and sectors**. They go into the same `fundamental_data` table the
 compliance gate reads — there is no parallel source of truth. Whitelisted impact
 ETFs are exempt.
 
@@ -180,7 +177,7 @@ marketmind/
   data/                         SQLite store + typed models
   live_trading.py               LiveTradingRunner + CLI entry point
   cockpit/
-    app.py                      5-page shell; Overview first
+    app.py                      three pages: Present, Future, Past
     theme.py                    shared visual system
     state.py                    process-wide runner state, refresh, data sync
     tabs/                       overview · data_lab · strategies · trading · journal

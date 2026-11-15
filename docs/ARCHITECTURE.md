@@ -48,10 +48,10 @@ marketmind/
     models.py               typed snapshots, bars, quotes, fundamentals
   live_trading.py           LiveTradingRunner + CLI
   cockpit/
-    app.py                  5-page shell; Overview first
-    theme.py                shared CSS, KPI cards, pills, callouts, chart styling
+    app.py                  three pages: Present, Future, Past
+    theme.py                shared CSS, KPI cards, callouts, chart styling
     state.py                process-wide runner state, Start/Stop, refresh, sync
-    tabs/                   overview · data_lab · strategies · trading · journal
+    tabs/                   present · future · past, plus the sections they reuse
 scripts/
   run_cockpit.py            single cockpit launcher
   ib_connection_probe.py    standalone connect → disconnect → reconnect + bracket
@@ -212,6 +212,6 @@ never produces a blank screen.
 * `MARKETMIND_IB_INTEGRATION=1` — opt-in live Gateway tests.
 * `scripts/ib_connection_probe.py --all` — connect / disconnect / reconnect,
   data and a cancelled 3-leg bracket.
-* Streamlit `AppTest` — all five pages against both an empty and a populated DB.
+* Streamlit `AppTest` — Present, Future and Past against both an empty and a populated DB.
 
 Runtime databases, `.workbuddy-ai/` state and archives are git-ignored.

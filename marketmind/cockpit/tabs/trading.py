@@ -28,7 +28,7 @@ def _diagnosis(state, journal, coverage) -> None:
         parts.append("the universe has no instruments")
     if stale:
         parts.append(f"<b>{stale}/{len(coverage)}</b> instruments lack enough "
-                     "fresh daily bars — sync IBKR history in Data & Universe")
+                     "fresh daily bars — sync them under Future")
     if result.get("strategies_ready", 0) == 0:
         parts.append("<b>no strategy is data-ready</b>, so no signal can be "
                      "generated")
@@ -38,7 +38,7 @@ def _diagnosis(state, journal, coverage) -> None:
     if missing_debt and result.get("signals", 0) > 0:
         parts.append(f"<b>{missing_debt}</b> instruments have no debt ratio — "
                      "the impact screen blocks those equities. Enter the ratio "
-                     "in Data & Universe → Compliance data")
+                     "under Future")
     blocked = [o for o in journal.orders(limit=50) if o["status"] == "blocked"]
     if blocked:
         parts.append(f"<b>{len(blocked)}</b> recent attempts were blocked by "
