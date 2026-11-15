@@ -40,6 +40,7 @@ marketmind/
   universe.py               instruments table: add / pause / metadata
   market_data.py            MarketDataService: sync, coverage, price_series,
                             manual fundamentals, sync_log, summary
+  momentum.py               12-1 signal, ATR stop, risk size (the live book)
   strategy_catalog.py       StrategySpec catalogue, availability, run, replay
   journal.py                paper_baseline / paper_daily / paper_orders,
                             PnlBreakdown, allocation_of, legacy migration
@@ -142,14 +143,19 @@ the API tag, never hardcoded.
 
 ## Strategy catalogue
 
-`SPECS` declares each rule's `min_bars`, `needs_fundamentals` and family.
-`availability(coverage)` reports which rules are runnable *and why the others
-are not*. `run_all_ready()` evaluates the ready rules and keeps the strongest
-`BUY` per symbol. `replay()` walks a rule over past bars using only data
-available on each date, returning BUY dates and forward returns — explicitly
-**not** a full backtest (no costs, sizing, TP/SL exits or compliance blocks).
+`marketmind/momentum.py` is the live book. The signal is the return from 252
+sessions ago to 21 sessions ago. The stop is two 20-day average true ranges
+under the highest close since entry, and it only moves up. Size is
+`floor(equity × 0.5% / stop distance)`, also capped at 20% of equity. A
+stop-out waits until the signal has gone non-positive before a new buy.
+`run_live()` is the only path the runner sends.
 
-No strategy emits a SELL. Exits are owned by the TP/SL brackets.
+`SPECS` still declares the other rules for study, each with `min_bars`,
+`needs_fundamentals` and family. `availability(coverage)` reports which are
+runnable and why the others are not. `replay()` walks a rule over past bars
+using only data available on each date — explicitly **not** a full backtest.
+
+No strategy emits a SELL. The runner sells only to close a long it already holds.
 
 ## Journal and honest P&L
 
@@ -157,7 +163,7 @@ No strategy emits a SELL. Exits are owned by the TP/SL brackets.
 |---|---|
 | `paper_baseline` | one immutable row: original capital / cash / equity / currency, from the API |
 | `paper_daily` | one upserted row per UTC day: net liquidation, cash, equity, total change, realized/unrealized/trading/interest P&L, accrued cash, currency, order count |
-| `paper_orders` | every bracket that was sent. `outcome` is `open` until a take-profit or stop fill is read back. Refusals are not stored |
+| `paper_orders` | every entry that was sent. `outcome` is `open` until the stop or the momentum exit fills. Refusals are not stored |
 
 `record()` only touches `paper_daily`; it never appends to the legacy
 `account_snapshots` / `portfolio_equity` tables.
@@ -180,17 +186,18 @@ The raw data browser on the Journal page is read-only.
 ## Orders
 
 ```
-BUY parent (market or limit, transmit=False)
-  ├─ SELL LIMIT take-profit   ref × 1.05   (parentId, transmit=False)
-  └─ SELL STOP  stop-loss     ref × 0.97   (parentId, transmit=True)
+BUY parent (market or limit, transmit=False, GTC)
+  └─ SELL STOP  entry − 2 × 20-day ATR   (parentId, transmit=True, GTC)
 ```
 
-`ref` is the bid/ask mid, falling back to last / close. No reference price ⇒
-submission **fails**, never a naked order. All legs are sanitised for the
-Gateway v151 `EtradeOnly` rejection (error 10268). Asset-class classification
-reads `WHITELISTED_ETFS` / `WHITELISTED_METALS` from `compliance.rules` — the
-single source of truth. Stopping the algo leaves resting brackets at IBKR so
-open positions stay protected.
+`ref` is the bid/ask mid, falling back to last / close. No reference price,
+or a stop that is not strictly below it, means submission **fails**. Both
+legs are sanitised for the Gateway v151 `EtradeOnly` rejection (error 10268).
+Asset-class classification reads `WHITELISTED_ETFS` / `WHITELISTED_METALS`
+from `compliance.rules` — the single source of truth. Each New York session
+the runner trails the stop up or, when the signal has died or the close is
+through the stop, cancels it and sells. Stopping the algo leaves the stop
+resting at IBKR.
 
 ## Cockpit
 

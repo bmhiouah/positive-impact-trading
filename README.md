@@ -107,20 +107,31 @@ Debt ratios and sectors**. They go into the same `fundamental_data` table the
 compliance gate reads — there is no parallel source of truth. Whitelisted impact
 ETFs are exempt.
 
-`marketmind/strategy_catalog.py` declares five long-only rules:
+The algo sends one rule, from `marketmind/momentum.py`. Buy when the stock's
+own return from 12 months ago to 1 month ago is positive. The stop starts two
+20-day average ranges under the entry and then follows the highest close since
+the entry, minus the same two ranges. It never moves down, and there is no
+take-profit. Each buy risks 0.5% of net liquidation, so the share count is
+that budget divided by the stop distance. A stop-out does not buy the name
+again until that 12-month reading has turned off and come back. The decision
+runs once per New York session, on the last completed daily bar.
 
-| Key | Rule | Needs |
-|---|---|---|
-| `trend` | Golden cross 50/200 | 200 daily bars |
-| `breakout` | 20-day high on above-average volume | 21 bars |
-| `dip` | RSI washout while above SMA50 | 50 bars |
-| `momentum` | 12-week strength still rising | 64 bars |
-| `impact_debt` | Compliant sector and debt/MCap < 33% | debt ratio |
+History is five years of daily bars, because the signal needs one year and a
+check on what came before needs more.
 
-`availability(coverage)` computes which are usable; `run_all_ready()` keeps the
-strongest BUY per symbol. No strategy emits a SELL — exits belong to the TP/SL
-brackets. `replay()` walks a rule over past bars using only data available at
-each date (a rule replay, **not** a full backtest).
+`marketmind/strategy_catalog.py` still declares the other long-only rules so
+they can be studied. The runner does not send them.
+
+| Key | Rule | Sent by the algo | Needs |
+|---|---|---|---|
+| `momentum` | 12-month return, skipping the last month | yes | 253 daily bars |
+| `trend` | Golden cross 50/200 | no | 200 daily bars |
+| `breakout` | 20-day high on above-average volume | no | 21 bars |
+| `dip` | RSI washout while above SMA50 | no | 50 bars |
+| `impact_debt` | Compliant sector and debt/MCap < 33% | no — this is the screen, not a buy | debt ratio |
+
+`replay()` walks a rule over past bars using only data available at each date
+(a rule replay, **not** a full backtest).
 
 ## The journal
 
@@ -130,7 +141,7 @@ each date (a rule replay, **not** a full backtest).
 |---|---|
 | `paper_baseline` | one immutable row: original capital / cash / equity / currency, from the API |
 | `paper_daily` | one upserted row per UTC day: net liquidation, cash, equity, total change, trading P&L, interest, accrued cash, currency, order count |
-| `paper_orders` | every bracket that was sent. Outcome stays open until the take-profit or the stop fill is read back. Refusals are not stored |
+| `paper_orders` | every entry that was sent. Outcome stays open until the stop fills or the momentum exit fills. Refusals are not stored |
 
 `record()` runs on every trading cycle, so it writes *only* to `paper_daily`
 and never appends to legacy `account_snapshots` / `portfolio_equity`.
@@ -143,21 +154,23 @@ old rows never claim the change came from trading.
 
 ## Orders
 
-Every submitted entry is a three-leg bracket built in
+Every submitted entry is a buy plus a GTC stop, built in
 `marketmind/broker/ib_adapter.py`:
 
 ```
-BUY parent (market or limit, transmit=False)
-  ├─ SELL LIMIT take-profit   ref × (1 + 5%)   (parentId, transmit=False)
-  └─ SELL STOP  stop-loss     ref × (1 - 3%)   (parentId, transmit=True)
+BUY parent (market or limit, transmit=False, GTC)
+  └─ SELL STOP  two average ranges under the entry   (parentId, transmit=True, GTC)
 ```
 
-`ref` is the bid/ask mid (falling back to last / close). If no reference price
-can be obtained, submission **fails instead of sending a naked order**. All
-three legs are sanitised for the Gateway v151 `EtradeOnly` rejection (error
-10268). Orders still pass through the `ImpactExecutionEngine` compliance gate;
-the runner only opens BUY positions and skips a symbol that already has a
-position or a resting bracket.
+There is no take-profit. The stop is good-til-cancelled because the position
+is held for weeks. `ref` is the bid/ask mid (falling back to last / close).
+If no reference price can be obtained, or the stop is not strictly below it,
+submission **fails instead of sending an unprotected order**. Both legs are
+sanitised for the Gateway v151 `EtradeOnly` rejection (error 10268). Orders
+still pass through the `ImpactExecutionEngine` compliance gate. When the
+12-month reading turns flat, or the close falls through the trailed stop, the
+runner cancels the stop and sells the shares. Stopping the algo leaves the
+stop resting at IBKR.
 
 ## Project layout
 
@@ -172,7 +185,8 @@ marketmind/
   compliance/                   ImpactExecutionEngine gate + whitelists
   universe.py                   instruments table: the scalable universe
   market_data.py                IBKR ingestion, coverage, manual fundamentals
-  strategy_catalog.py           data-gated long-only strategies + replay
+  momentum.py                   the live book: 12-1 signal, ATR stop, size
+  strategy_catalog.py           live rule plus study rules, and replay
   journal.py                    paper_baseline / paper_daily / paper_orders
   data/                         SQLite store + typed models
   live_trading.py               LiveTradingRunner + CLI entry point

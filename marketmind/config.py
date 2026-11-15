@@ -19,10 +19,19 @@ MARKET_DATA_TYPE = 3      # 3 = delayed data (paper accounts have no live feed)
 
 # --- Lab behaviour ----------------------------------------------------------
 DB_PATH = "data/marketmind.db"
-POLL_INTERVAL = 60.0      # seconds between trading cycles
-TAKE_PROFIT_PCT = 0.05    # +5% from the reference price
-STOP_LOSS_PCT = 0.03      # -3% from the reference price
-QUANTITY = 1.0            # shares per long entry
+POLL_INTERVAL = 60.0      # seconds between connection checks and fill reads
+
+# The one live rule. Buy when the stock's own return from 12 months ago to
+# 1 month ago is positive. The stop is two 20-day average ranges under the
+# highest close since entry, and it only moves up. There is no take-profit.
+# Each entry risks the same small fraction of the account; the share count
+# comes from that budget divided by the stop distance.
+MOMENTUM_FORMATION = 252   # trading days, about twelve months
+MOMENTUM_SKIP = 21         # skip the last month (short-term reversal)
+ATR_PERIOD = 20
+ATR_MULTIPLE = 2.0
+RISK_FRACTION = 0.005          # of net liquidation, per trade
+MAX_POSITION_FRACTION = 0.20   # notional cap, so a tiny stop cannot buy the book
 
 # --- Universe and market data ----------------------------------------------
 # Seed only. The live universe is stored in the `instruments` table and can be
@@ -32,8 +41,8 @@ QUANTITY = 1.0            # shares per long entry
 DEFAULT_UNIVERSE = (
     "AAPL", "MSFT", "NVDA", "TSLA", "JPM", "SPUS", "HLAL",
 )
-HISTORY_DURATION = "1 Y"
+HISTORY_DURATION = "5 Y"  # 12-1 momentum needs a year, and a check needs more
 HISTORY_BAR_SIZE = "1 day"
-MIN_BARS_FOR_SIGNALS = 60
+MIN_BARS_FOR_SIGNALS = MOMENTUM_FORMATION + 1
 DATA_STALE_HOURS = 36      # coverage older than this is "partial", not "ready"
 DATA_SYNC_COOLDOWN = 3600  # seconds between automatic refreshes by the runner

@@ -5,8 +5,9 @@ available *given the data actually present*, and the runner only executes the
 ready ones. Adding more symbols to the universe or more history automatically
 unlocks more strategies — no wiring change required.
 
-No strategy ever emits a SELL. Exits are handled by the TP/SL brackets that
-accompany every entry, and shorting is not part of this lab.
+No strategy ever emits a SELL. The live rule is 12-month momentum. Its exit
+is a stop that trails with the stock's own range, not a fixed take-profit.
+The other rules stay here so they can be studied. The runner does not send them.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import numpy as np
 from marketmind import config
 from marketmind.compliance.rules import is_debt_ratio_compliant, is_excluded_sector
 from marketmind.data.storage import DataStore
+from marketmind import momentum as momentum_book
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,7 @@ class StrategySpec:
     min_bars: int = 0
     needs_fundamentals: bool = False
     family: str = "Price"
+    live: bool = False
 
 
 SPECS: tuple[StrategySpec, ...] = (
@@ -52,9 +55,10 @@ SPECS: tuple[StrategySpec, ...] = (
         min_bars=50, family="Mean reversion",
     ),
     StrategySpec(
-        key="momentum", name="12-week momentum",
-        description="Buy sustained 63-session strength that is still rising over the last week.",
-        min_bars=64, family="Momentum",
+        key="momentum", name="12-month momentum",
+        description=("Buy when the return from 12 months ago to 1 month ago "
+                     "is positive. This is the rule the algo sends."),
+        min_bars=config.MOMENTUM_FORMATION + 1, family="Momentum", live=True,
     ),
     StrategySpec(
         key="impact_debt", name="Impact quality screen",
@@ -176,19 +180,22 @@ def _dip(store: DataStore, symbol: str, spec: StrategySpec
 
 def _momentum(store: DataStore, symbol: str, spec: StrategySpec
               ) -> Optional[Dict[str, Any]]:
-    data = _closes(store, symbol)
+    data = momentum_book.load_bars(store, symbol)
     if data is None or len(data["close"]) < spec.min_bars:
         return None
-    close = data["close"]
-    price = float(close[-1])
-    r63 = price / float(close[-64]) - 1
-    r5 = price / float(close[-6]) - 1
-    buy = r63 > 0.05 and r5 > 0
-    strength = min(1.0, r63 / 0.25) if buy else 0.0
+    snap = momentum_book.assess(
+        data["high"], data["low"], data["close"], data["dates"],
+    )
+    if snap is None:
+        return None
+    strength = min(1.0, snap.momentum / 0.50) if snap.buy else 0.0
     return _signal(
-        symbol, spec, "BUY" if buy else "HOLD", strength,
-        f"63-session return {r63:+.1%}, last 5 sessions {r5:+.1%}",
-        price, return_63=round(r63, 4), return_5=round(r5, 4),
+        symbol, spec, "BUY" if snap.buy else "HOLD", strength,
+        (f"12-1 return {snap.momentum:+.1%} through {snap.day.isoformat()}, "
+         f"ATR {snap.atr:.2f}, stop {snap.stop:.2f}"),
+        snap.close, momentum=round(snap.momentum, 4),
+        atr=round(snap.atr, 4), stop=snap.stop,
+        bar_date=snap.day.isoformat(),
     )
 
 
@@ -245,7 +252,7 @@ def availability(coverage: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         result.append({
             "key": spec.key, "name": spec.name,
             "description": spec.description, "family": spec.family,
-            "min_bars": spec.min_bars,
+            "min_bars": spec.min_bars, "live": spec.live,
             "needs_fundamentals": spec.needs_fundamentals,
             "eligible": eligible, "ready": eligible > 0, "reason": reason,
         })
@@ -269,9 +276,22 @@ def run(key: str, symbols: List[str], store: DataStore) -> List[Dict[str, Any]]:
     return signals
 
 
+def run_live(symbols: List[str], store: DataStore,
+             coverage: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """BUY signals from the one rule the runner is allowed to send."""
+    live = next((item for item in availability(coverage) if item.get("live")), None)
+    if live is None or not live["ready"]:
+        return []
+    return [signal for signal in run(live["key"], symbols, store)
+            if signal["action"] == "BUY"]
+
+
 def run_all_ready(symbols: List[str], store: DataStore,
                   coverage: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Every ready strategy, deduplicated to the strongest BUY per symbol."""
+    """Every ready strategy, deduplicated to the strongest BUY per symbol.
+
+    Study view. The runner does not use this. It sends ``run_live`` only.
+    """
     strongest: Dict[str, Dict[str, Any]] = {}
     for item in availability(coverage):
         if not item["ready"]:
@@ -317,11 +337,10 @@ def _dip_at(data: Dict[str, np.ndarray], i: int) -> Optional[bool]:
 
 
 def _momentum_at(data: Dict[str, np.ndarray], i: int) -> Optional[bool]:
-    if i < 64:
+    reading = momentum_book.return_12_1(data["close"], i)
+    if reading is None:
         return None
-    close = data["close"]
-    return bool(close[i] / close[i - 63] - 1 > 0.05
-                and close[i] / close[i - 5] - 1 > 0)
+    return bool(reading > 0)
 
 
 _RULES_AT = {

@@ -14,9 +14,10 @@ and disconnect all happen on that same loop. Callers (Streamlit, the runner
 thread, tests) only ever call synchronous methods; those methods submit a
 *factory* to the IB loop and block on the result with a hard timeout.
 
-Every order sent by this adapter is a BRACKET: a long entry plus a take-profit
-limit child and a stop-loss stop child. A naked order is never transmitted —
-if no reference price can be obtained, submission fails loudly instead.
+A long entry is a parent buy plus a GTC stop child. There is no take-profit.
+The stop price is chosen by the caller (two average ranges under the entry).
+A close is a market sell of shares already held. A buy with no reference
+price, or a stop that is not below that price, is refused.
 """
 
 from __future__ import annotations
@@ -75,15 +76,6 @@ class ConnectionInfo:
     connected_at: str = ""
 
 
-@dataclass(frozen=True)
-class BracketPrices:
-    """The three prices of a bracket entry."""
-
-    reference: float
-    take_profit: float
-    stop_loss: float
-
-
 def clean_legacy_order_fields(order: IBOrder) -> IBOrder:
     """Neutralise legacy order attributes that modern Gateways reject.
 
@@ -98,35 +90,30 @@ def clean_legacy_order_fields(order: IBOrder) -> IBOrder:
     return order
 
 
-def bracket_prices(reference: float,
-                   take_profit_pct: float = config.TAKE_PROFIT_PCT,
-                   stop_loss_pct: float = config.STOP_LOSS_PCT) -> BracketPrices:
-    """Compute TP / SL prices from a reference price (pure, testable)."""
+def protective_stop(reference: float, stop: float) -> float:
+    """A sell-stop that sits strictly below the reference price."""
     try:
         ref = float(reference)
+        level = round(float(stop), 2)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"invalid reference price {reference!r}") from exc
-    if not math.isfinite(ref) or ref <= 0:
-        raise ValueError(f"invalid reference price {reference!r}")
-    take_profit = round(ref * (1.0 + take_profit_pct), 2)
-    stop_loss = round(ref * (1.0 - stop_loss_pct), 2)
-    if not (0 < stop_loss < ref < take_profit):
+        raise ValueError(f"invalid stop against reference {reference!r}") from exc
+    if not math.isfinite(ref) or ref <= 0 or not math.isfinite(level):
+        raise ValueError(f"invalid stop {stop!r} against reference {reference!r}")
+    if not 0 < level < ref:
         raise ValueError(
-            f"TP/SL percentages produce invalid prices for ref={ref}: "
-            f"TP={take_profit} SL={stop_loss}"
+            f"stop {level} must sit strictly below the reference {ref}"
         )
-    return BracketPrices(reference=ref, take_profit=take_profit,
-                         stop_loss=stop_loss)
+    return level
 
 
-def build_bracket(ib: IB, action: str, quantity: float,
-                  entry_limit: Optional[float], prices: BracketPrices,
-                  account: Optional[str] = None) -> Tuple[IBOrder, IBOrder, IBOrder]:
-    """Build parent + take-profit + stop-loss legs for one long entry.
+def build_protected_entry(ib: IB, action: str, quantity: float,
+                          entry_limit: Optional[float], stop_price: float,
+                          account: Optional[str] = None
+                          ) -> Tuple[IBOrder, IBOrder]:
+    """Parent buy plus a GTC stop child. No take-profit.
 
-    Mirrors ``ib_insync.IB.bracketOrder`` but also works with a MARKET parent
-    and applies the legacy-field sanitisation to all three legs. IB cancels the
-    remaining child automatically when either child fills.
+    The stop is good-til-cancelled because the position is held for weeks.
+    A day order would expire and leave the shares unprotected overnight.
     """
     parent_id = ib.client.getReqId()
     reverse = "SELL" if action == "BUY" else "BUY"
@@ -138,22 +125,17 @@ def build_bracket(ib: IB, action: str, quantity: float,
     parent.orderId = parent_id
     parent.transmit = False
 
-    take_profit = LimitOrder(
-        reverse, quantity, prices.take_profit,
-        orderId=ib.client.getReqId(), parentId=parent_id, transmit=False,
-    )
     stop_loss = StopOrder(
-        reverse, quantity, prices.stop_loss,
+        reverse, quantity, float(stop_price),
         orderId=ib.client.getReqId(), parentId=parent_id, transmit=True,
     )
-
-    for leg in (parent, take_profit, stop_loss):
+    for leg in (parent, stop_loss):
         clean_legacy_order_fields(leg)
-        leg.tif = "DAY"
+        leg.tif = "GTC"
         leg.outsideRth = False
         if account:
             leg.account = account
-    return parent, take_profit, stop_loss
+    return parent, stop_loss
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -788,8 +770,25 @@ class IBKRAdapter:
         )
 
     # ------------------------------------------------------------------
-    # Order submission — compliance-gated, ALWAYS a TP/SL bracket
+    # Order submission — compliance-gated. A buy always carries a GTC stop.
     # ------------------------------------------------------------------
+
+    async def _await_status(self, trade, errors: List[tuple[int, str]],
+                            label: str) -> str:
+        status = ""
+        for _ in range(50):  # up to ~10 s for the acknowledgement
+            await asyncio.sleep(0.2)
+            status = trade.orderStatus.status
+            if status in _ACCEPTED_STATUSES or status in {
+                "Cancelled", "Inactive", "ApiCancelled"
+            }:
+                break
+        for code, message in errors:
+            if code in _ORDER_REJECT_CODES:
+                raise RuntimeError(f"IBKR rejected the {label} ({code}: {message})")
+        if status not in _ACCEPTED_STATUSES:
+            raise RuntimeError(f"IBKR did not accept the {label} (status={status!r})")
+        return status
 
     async def _place_order_on_loop(self, order_intent) -> Dict[str, Any]:
         ib = self._require_ib()
@@ -803,12 +802,12 @@ class IBKRAdapter:
         if reference is None:
             raise RuntimeError(
                 f"no market price for {order_intent.symbol} — refusing to send "
-                "an order without TP/SL"
+                "a buy without a stop"
             )
-        prices = bracket_prices(reference)
-        parent, take_profit, stop_loss = build_bracket(
+        stop = protective_stop(reference, order_intent.stop_price)
+        parent, stop_loss = build_protected_entry(
             ib, order_intent.side.value, order_intent.quantity,
-            order_intent.limit_price, prices, self._account,
+            order_intent.limit_price, stop, self._account,
         )
 
         errors: List[tuple[int, str]] = []
@@ -819,50 +818,62 @@ class IBKRAdapter:
         ib.errorEvent += on_error
         try:
             parent_trade = ib.placeOrder(contract, parent)
-            ib.placeOrder(contract, take_profit)
             ib.placeOrder(contract, stop_loss)
             logger.info(
-                "BRACKET SENT %s %s %s: entry id=%s ref=%.2f TP=%.2f (id=%s) "
-                "SL=%.2f (id=%s)",
+                "ENTRY SENT %s %s %s: id=%s ref=%.2f stop=%.2f (id=%s)",
                 order_intent.side.value, order_intent.symbol,
-                order_intent.quantity, parent.orderId, prices.reference,
-                prices.take_profit, take_profit.orderId,
-                prices.stop_loss, stop_loss.orderId,
+                order_intent.quantity, parent.orderId, reference,
+                stop, stop_loss.orderId,
             )
-            status = ""
-            for _ in range(50):  # up to ~10 s for the parent acknowledgement
-                await asyncio.sleep(0.2)
-                status = parent_trade.orderStatus.status
-                if status in _ACCEPTED_STATUSES or status in {
-                    "Cancelled", "Inactive", "ApiCancelled"
-                }:
-                    break
-            for code, message in errors:
-                if code in _ORDER_REJECT_CODES:
-                    raise RuntimeError(
-                        f"IBKR rejected the bracket ({code}: {message})"
-                    )
-            if status not in _ACCEPTED_STATUSES:
-                raise RuntimeError(
-                    f"IBKR did not accept the bracket (status={status!r})"
-                )
+            status = await self._await_status(parent_trade, errors, "entry")
             return {
                 "order_id": parent.orderId,
                 "perm_id": parent_trade.order.permId,
                 "status": status,
                 "entry_type": parent.orderType,
                 "entry_price": _maybe_num(getattr(parent, "lmtPrice", None)),
-                "reference_price": prices.reference,
-                "take_profit_order_id": take_profit.orderId,
-                "take_profit_price": prices.take_profit,
+                "reference_price": reference,
+                "take_profit_order_id": None,
+                "take_profit_price": None,
                 "stop_loss_order_id": stop_loss.orderId,
-                "stop_loss_price": prices.stop_loss,
+                "stop_loss_price": stop,
             }
         finally:
             ib.errorEvent -= on_error
 
+    async def _place_close_on_loop(self, order_intent) -> Dict[str, Any]:
+        """Market sell of a long already held. The resting stop is cancelled first."""
+        ib = self._require_ib()
+        contract = Stock(order_intent.symbol, "SMART", "USD")
+        await ib.qualifyContractsAsync(contract)
+        if not contract.conId:
+            raise RuntimeError(f"unknown contract {order_intent.symbol}")
+        order = MarketOrder("SELL", order_intent.quantity)
+        order.orderId = ib.client.getReqId()
+        order.transmit = True
+        clean_legacy_order_fields(order)
+        order.tif = "GTC"
+        order.outsideRth = False
+        if self._account:
+            order.account = self._account
+
+        errors: List[tuple[int, str]] = []
+
+        def on_error(_req_id, code, message, _contract):
+            errors.append((int(code), str(message)))
+
+        ib.errorEvent += on_error
+        try:
+            trade = ib.placeOrder(contract, order)
+            logger.info("EXIT SENT SELL %s %s id=%s",
+                        order_intent.symbol, order_intent.quantity, order.orderId)
+            status = await self._await_status(trade, errors, "exit")
+            return {"order_id": order.orderId, "status": status}
+        finally:
+            ib.errorEvent -= on_error
+
     def submit_order(self, order_intent) -> Dict[str, Any]:
-        """Validate through compliance, then send a TP/SL bracket to IBKR."""
+        """Validate through compliance, then send a buy with its GTC stop."""
         decision: ExecutionDecision = self._engine.submit(order_intent)
         if not decision.verdict.approved:
             return {
@@ -882,7 +893,7 @@ class IBKRAdapter:
             logger.error("Bracket submission failed for %s: %s",
                          order_intent.symbol, exc)
             raise RuntimeError(
-                f"Failed to submit bracket for {order_intent.symbol} to IBKR: {exc}"
+                f"Failed to submit entry for {order_intent.symbol} to IBKR: {exc}"
             ) from exc
         return {
             "approved": True,
@@ -890,6 +901,52 @@ class IBKRAdapter:
             "rejection_reason": None,
             **result,
         }
+
+    def submit_close(self, order_intent) -> Dict[str, Any]:
+        """Validate a SELL, then send a market order that closes the long."""
+        decision: ExecutionDecision = self._engine.submit(order_intent)
+        if not decision.verdict.approved:
+            return {
+                "approved": False,
+                "submitted": False,
+                "order_id": None,
+                "rejection_reason": decision.rejection_reason,
+            }
+        self._require_ib()
+        try:
+            result = self._submit(
+                lambda: self._place_close_on_loop(order_intent),
+                timeout=max(self._op_timeout, 20.0),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Exit failed for %s: %s", order_intent.symbol, exc)
+            raise RuntimeError(
+                f"Failed to close {order_intent.symbol} at IBKR: {exc}"
+            ) from exc
+        return {
+            "approved": True,
+            "submitted": True,
+            "rejection_reason": None,
+            **result,
+        }
+
+    def modify_stop(self, order_id: int, stop_price: float) -> bool:
+        """Raise a resting stop. Returns False when that order is not open."""
+        level = round(float(stop_price), 2)
+
+        def _modify() -> bool:
+            ib = self._require_ib()
+            for trade in list(ib.openTrades()):
+                if trade.order.orderId != order_id or trade.isDone():
+                    continue
+                trade.order.auxPrice = level
+                trade.order.tif = "GTC"
+                clean_legacy_order_fields(trade.order)
+                ib.placeOrder(trade.contract, trade.order)
+                return True
+            return False
+
+        return bool(self._submit(_modify, timeout=self._op_timeout))
 
     def cancel_order(self, order_id: int) -> bool:
         """Cancel a single open order by id. Returns False if it is unknown."""

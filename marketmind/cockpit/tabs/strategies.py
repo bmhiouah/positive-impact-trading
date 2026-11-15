@@ -1,9 +1,8 @@
 """Strategies — the long-only catalogue, driven by the data we actually have.
 
-A strategy declares its data requirements. The UI shows which ones are
-available, the signal explorer shows what they say right now, and the replay
-shows what a rule would have said on past bars. No SELL signals are produced:
-exits belong to the TP/SL brackets.
+A strategy declares its data requirements. The live rule is 12-month
+momentum. The others stay visible so they can be studied. The algo does not
+send them. No SELL signals are produced: the exit is the trailing stop.
 """
 
 from __future__ import annotations
@@ -20,8 +19,12 @@ from marketmind.cockpit.state import get_market
 
 
 def _spec_card(item: Dict[str, Any]) -> str:
-    state = (theme.pill("Ready", "ok") if item["ready"]
-             else theme.pill("Waiting for data", "warn"))
+    if item.get("live"):
+        state = (theme.pill("Live", "ok") if item["ready"]
+                 else theme.pill("Live · needs a year of bars", "warn"))
+    else:
+        state = (theme.pill("Study", "info") if item["ready"]
+                 else theme.pill("Waiting for data", "warn"))
     return (
         "<div class='pit-card' style='min-height:0;margin-bottom:12px'>"
         f"<div style='display:flex;justify-content:space-between;gap:8px;"
@@ -80,19 +83,18 @@ def _context(store):
 def render_ideas(store=None) -> None:
     """Catalogue and what the rules would buy on the data we have now."""
     market, coverage, symbols, availability, ready = _context(store)
-    current = strategy_catalog.run_all_ready(symbols, store, coverage)
+    current = strategy_catalog.run_live(symbols, store, coverage)
 
     theme.card_row([
-        theme.card("Ready to run", f"{len(ready)} / {len(availability)}",
-                   "The others say which data is missing"),
+        theme.card("Ready to study", f"{len(ready)} / {len(availability)}",
+                   "Live means the algo can send it"),
         theme.card("Instruments ready",
                    f"{sum(1 for r in coverage if r['status'] == 'ready')}",
                    f"of {len(symbols)} active tickers"),
-        theme.card("BUY right now", f"{len(current)}",
-                   "Strongest signal kept per symbol"),
-        theme.card("If one is used", "3 legs",
-                   f"BUY + TP +{config.TAKE_PROFIT_PCT:.0%} / "
-                   f"SL −{config.STOP_LOSS_PCT:.0%}"),
+        theme.card("Live buys", f"{len(current)}",
+                   "12-month momentum, last completed day"),
+        theme.card("How a buy is protected", f"{config.ATR_MULTIPLE:.0f}× ATR",
+                   f"Stop trails up · risks {config.RISK_FRACTION:.1%} · no target"),
     ])
 
     theme.section("📚  Catalogue", "Each card says whether the stored data can support it")
@@ -209,7 +211,8 @@ def _render_compare(store, symbols, availability) -> None:
         theme.style_figure(fig, height=320, legend=True)
         st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     theme.callout(
-        "When the algo runs, it keeps the <b>strongest BUY per symbol</b>, "
-        "applies the impact screen, then sends a bracket. A missing debt "
-        "ratio is written to the journal instead of being skipped in silence.",
+        "When the algo runs it sends only <b>12-month momentum</b>. The "
+        "impact screen still has to pass, and the stop is two average ranges "
+        "under the highest close since entry. The other cards are here to "
+        "study. A missing debt ratio blocks the buy and is not stored.",
     )

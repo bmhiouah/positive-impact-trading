@@ -7,7 +7,7 @@ No connection settings: the fixed session constants come from
 Run with the same interpreter the cockpit uses:
 
     /Users/badremhiouah/miniconda3/envs/py314/bin/python scripts/ib_connection_probe.py
-    ... --all     # also test data + a full TP/SL bracket round trip
+    ... --all     # also test data + an unfillable buy with its stop
 
 Stages
 ------
@@ -17,8 +17,8 @@ Stages
                  start/stop cycle works (the "Start Algo" use case)
 
 --data     account values, historical bars, delayed quote
---order    place a deliberately unfillable 1-share bracket (entry + TP + SL),
-           verify IB acknowledges it, then cancel all three legs. Nothing bought.
+--order    place a deliberately unfillable 1-share buy plus its stop,
+           verify IB acknowledges it, then cancel both legs. Nothing bought.
 --all      both.
 
 Exit code 0 = every requested stage passed, 1 = at least one failed.
@@ -44,7 +44,7 @@ asyncio.set_event_loop(LOOP)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from marketmind import config  # noqa: E402  (pure constants, no ib_insync)
 
-from ib_insync import IB, LimitOrder, StopOrder, Stock, util  # noqa: E402
+from ib_insync import IB, Stock, util  # noqa: E402
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 util.logToConsole(logging.WARNING)
@@ -159,13 +159,6 @@ REJECT_CODES = {
 }
 
 
-def clean_legacy_order_fields(order) -> None:
-    """ib_insync 0.9.50 defaults eTradeOnly=True; Gateway >= 145 rejects it."""
-    order.eTradeOnly = False
-    order.firmQuoteOnly = False
-    order.nbboPriceCap = None
-
-
 async def _snapshot_ticker(ib: IB, contract):
     # snapshot=True ends the subscription itself; cancelling it afterwards
     # would only produce a spurious IB error 300.
@@ -223,12 +216,13 @@ async def _receive_data(ib: IB, symbol: str) -> None:
 
 
 async def _bracket_round_trip(ib: IB, symbol: str) -> None:
-    """Place an unfillable bracket, verify acknowledgement, cancel all 3 legs.
+    """Place an unfillable buy plus its stop, then cancel both legs.
 
-    The entry limit sits 50% below the reference price, so it rests on the book
-    and never fills. TP/SL are anchored to the reference price, exactly like
-    the trading bot does. No position is opened.
+    The entry limit sits 50% below the reference price, so it rests and never
+    fills. The stop sits further below. No position is opened.
     """
+    from marketmind.broker.ib_adapter import build_protected_entry
+
     contract = Stock(symbol, "SMART", "USD")
     qualified = await ib.qualifyContractsAsync(contract)
     if not qualified:
@@ -237,25 +231,13 @@ async def _bracket_round_trip(ib: IB, symbol: str) -> None:
     ticker = await _snapshot_ticker(ib, contract)
     reference = _reference_price(ticker)
     if reference <= 0:
-        raise ProbeError("cannot build TP/SL without a reference price")
+        raise ProbeError("cannot build a stop without a reference price")
 
     entry_price = round(max(0.01, reference * 0.50), 2)
-    tp_price = round(reference * (1 + config.TAKE_PROFIT_PCT), 2)
-    sl_price = round(reference * (1 - config.STOP_LOSS_PCT), 2)
-
-    parent_id = ib.client.getReqId()
-    parent = LimitOrder("BUY", 1, entry_price, orderId=parent_id,
-                        transmit=False)
-    take_profit = LimitOrder("SELL", 1, tp_price,
-                             orderId=ib.client.getReqId(),
-                             parentId=parent_id, transmit=False)
-    stop_loss = StopOrder("SELL", 1, sl_price,
-                          orderId=ib.client.getReqId(),
-                          parentId=parent_id, transmit=True)
-    for leg in (parent, take_profit, stop_loss):
-        clean_legacy_order_fields(leg)
-        leg.tif = "DAY"
-        leg.outsideRth = False
+    sl_price = round(max(0.01, reference * 0.40), 2)
+    parent, stop_loss = build_protected_entry(
+        ib, "BUY", 1, entry_price, sl_price,
+    )
 
     errors: list[tuple[int, str]] = []
 
@@ -265,11 +247,11 @@ async def _bracket_round_trip(ib: IB, symbol: str) -> None:
     ib.errorEvent += on_error
     trades = []
     try:
-        for leg in (parent, take_profit, stop_loss):
+        for leg in (parent, stop_loss):
             trades.append(ib.placeOrder(contract, leg))
-        _ok(f"BRACKET SENT: entry id={parent.orderId} BUY 1 {symbol} "
-            f"LMT {entry_price} · TP {tp_price} (id={take_profit.orderId}) "
-            f"· SL {sl_price} (id={stop_loss.orderId}) · ref={reference:.2f}")
+        _ok(f"ENTRY SENT: id={parent.orderId} BUY 1 {symbol} "
+            f"LMT {entry_price} · stop {sl_price} (id={stop_loss.orderId}) "
+            f"· ref={reference:.2f}")
 
         accepted = {"Submitted", "PreSubmitted", "Filled"}
         status = ""
@@ -284,7 +266,7 @@ async def _bracket_round_trip(ib: IB, symbol: str) -> None:
                                  f"{REJECT_CODES[code]}: {message})")
         if status not in accepted:
             raise ProbeError(f"bracket NOT accepted by IB (status={status!r})")
-        _ok(f"BRACKET ACCEPTED by IB: status={status} "
+        _ok(f"ENTRY ACCEPTED by IB: status={status} "
             f"permId={trades[0].order.permId}")
     finally:
         for trade in trades:
@@ -294,7 +276,7 @@ async def _bracket_round_trip(ib: IB, symbol: str) -> None:
             await asyncio.sleep(0.2)
             if all(t.isDone() for t in trades):
                 break
-        _ok(f"BRACKET CANCELLED: {sum(t.isDone() for t in trades)}/3 legs done")
+        _ok(f"ENTRY CANCELLED: {sum(t.isDone() for t in trades)}/2 legs done")
         ib.errorEvent -= on_error
 
 

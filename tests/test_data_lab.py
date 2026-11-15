@@ -186,6 +186,9 @@ def test_strategies_are_long_only_and_data_gated(lab, store) -> None:
         "one strongest BUY per symbol"
     assert all(s["strategy"] != "impact_debt" for s in entries), \
         "no debt-ratio data means that screen cannot run"
+    live = strategy_catalog.run_live(symbols, store, coverage)
+    assert live and all(s["strategy"] == "momentum" for s in live), \
+        "the runner is only allowed to send the 12-month rule"
 
 
 def test_replay_uses_only_past_data_and_reports_forward_returns(lab, store) -> None:
