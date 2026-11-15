@@ -1,8 +1,8 @@
-"""A quiet, light visual system for the three-part cockpit.
+"""Light cockpit colours: cool gray page, white cards, one teal accent.
 
-Present, Future and Past are the navigation. The page is warm paper, the type
-is near-black, and the only strong colour is the action you can take. Gains
-are green and losses are red.
+The page stays pale so it can be looked at for a while. Teal is reserved for
+the selected page and the main button, so the screen is not gray all over.
+Gains are green and losses are red, separate from that teal.
 """
 
 from __future__ import annotations
@@ -13,20 +13,20 @@ from typing import Iterable, Optional, Sequence
 import plotly.graph_objects as go
 import streamlit as st
 
-INK = "#1C1917"
-MUTED = "#57534E"
-FAINT = "#A8A29E"
-BORDER = "#E7E5E4"
+INK = "#1E293B"
+MUTED = "#526071"
+FAINT = "#8B9AAB"
+BORDER = "#D5E0EA"
 SURFACE = "#FFFFFF"
-PAGE = "#F4F1EA"
-BRAND = "#1C1917"
-OK = "#0F7A4A"
-CASH = "#CBD5E1"
-EQUITY = "#1C1917"
-UP = "#0F7A4A"
-DOWN = "#B42318"
-AMBER = "#B45309"
-GRID = "#E7E5E4"
+PAGE = "#E7EEF5"
+BRAND = "#0E7490"
+OK = "#15803D"
+CASH = "#7BA3C9"
+EQUITY = "#0E7490"
+UP = "#15803D"
+DOWN = "#C2413A"
+AMBER = "#C2710C"
+GRID = "#E2EAF2"
 
 NAV_KEY = "mode"
 
@@ -47,24 +47,15 @@ _CSS = f"""
   [data-testid="collapsedControl"] {{ display: none; }}
 
   h1, h2, h3, p, span, div, label, button {{
-      font-family: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
-  }}
-  div[data-testid="stDataFrame"], .stButton > button, .stTabs,
-  div[data-testid="stSegmentedControl"] button,
-  div[data-testid="stTextInput"] input,
-  div[data-testid="stNumberInput"] input,
-  div[data-testid="stSelectbox"] div {{
       font-family: Inter, "Segoe UI", Helvetica, Arial, sans-serif;
   }}
 
   .pit-topline {{
       display: flex; align-items: baseline; gap: 1rem;
       margin: 0 0 1rem 0; color: {MUTED}; font-size: 13px;
-      font-family: Inter, "Segoe UI", Helvetica, Arial, sans-serif;
   }}
   .pit-topline b {{
       color: {INK}; font-size: 15px; font-weight: 700; letter-spacing: -0.01em;
-      font-family: "Iowan Old Style", Palatino, Georgia, serif;
   }}
   .pit-topline .grow {{ margin-left: auto; }}
 
@@ -173,7 +164,7 @@ _CSS = f"""
   }}
   .stButton > button[kind="primary"],
   .stButton > button[data-testid="stBaseButton-primary"] {{
-      background: {INK}; color: #FFFFFF; border: 1px solid {INK};
+      background: {BRAND}; color: #FFFFFF; border: 1px solid {BRAND};
   }}
   .stButton > button[kind="secondary"],
   .stButton > button[data-testid="stBaseButton-secondary"] {{
@@ -185,9 +176,10 @@ _CSS = f"""
   button[data-variant="segmented_control"] p {{
       font-family: Inter, "Segoe UI", sans-serif;
       font-size: 15px; font-weight: 650; margin: 0;
+      white-space: nowrap;
   }}
   button[data-variant="segmented_control"][aria-checked="true"] {{
-      background: {INK} !important; color: #FFFFFF !important;
+      background: {BRAND} !important; color: #FFFFFF !important;
   }}
   button[data-variant="segmented_control"][aria-checked="true"] p {{
       color: #FFFFFF !important;

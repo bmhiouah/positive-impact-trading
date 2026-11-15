@@ -1,4 +1,4 @@
-"""Past — how the capital evolved, and every bracket the lab sent."""
+"""Journal — how the capital moved, and every bracket the lab sent."""
 
 from __future__ import annotations
 
@@ -26,8 +26,8 @@ def _outcome(status: str) -> str:
 
 def render(store=None) -> None:
     theme.heading(
-        "Past",
-        "How the paper capital evolved, and what was sent on each stock.",
+        "📒 Journal",
+        "How the paper capital moved, and every order that was sent.",
     )
 
     journal = get_journal()
@@ -62,7 +62,7 @@ def render(store=None) -> None:
     ])
     _explanation(pnl, currency)
 
-    theme.section("How the capital moved", "One row per UTC day")
+    theme.section("📈  How the capital moved", "One row per UTC day")
     if not history:
         theme.empty("No daily rows yet", "They are written on every account read and every cycle.")
     else:
@@ -74,7 +74,7 @@ def render(store=None) -> None:
             st.plotly_chart(_change_chart(history, currency),
                             width="stretch", config={"displayModeBar": False})
 
-    theme.section("Orders by stock", "Sent, blocked, or failed")
+    theme.section("🧾  Orders by stock", "Sent, blocked, or failed")
     theme.callout(
         "A <b>sent</b> row left the lab as a bracket. <b>Blocked</b> means the "
         "impact screen refused it. <b>Failed</b> means IBKR rejected it. The "
@@ -105,10 +105,10 @@ def render(store=None) -> None:
             "Note": order["note"] or "",
         } for order in orders]), width="stretch", hide_index=True)
 
-    theme.section("Replay a rule", "What a strategy would have said on past bars")
+    theme.section("⏪  Replay a rule", "What a strategy would have said on past bars")
     render_replay(store)
 
-    theme.section("Day by day", "Trading is kept apart from interest")
+    theme.section("📅  Day by day", "Trading is kept apart from interest")
     if history:
         st.dataframe(_daily_frame(history, currency), width="stretch", hide_index=True)
         st.download_button(
@@ -118,7 +118,7 @@ def render(store=None) -> None:
             mime="text/csv",
         )
     else:
-        theme.empty("No daily rows yet", "Read the account on Present, or start the algo.")
+        theme.empty("No daily rows yet", "Read the account on Trading, or start the algo.")
 
     with st.expander("Raw tables"):
         st.caption(f"Read-only. Stored in `{config.DB_PATH}`.")

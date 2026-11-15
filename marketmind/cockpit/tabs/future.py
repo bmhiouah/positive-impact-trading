@@ -1,4 +1,4 @@
-"""Future — strategies that might be used, and the data they still need."""
+"""Strategies — rules that might be used, and the data they still need."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ from marketmind.cockpit.tabs import data_lab, strategies
 
 def render(store=None) -> None:
     theme.heading(
-        "Future",
-        "Strategies you might run later, and the data each one still needs.",
+        "🧪 Strategies",
+        "Rules you can run, and the data each one still needs.",
     )
     strategies.render_ideas(store)
 
-    theme.section("Data they need", "One sync, then the tickers and the debt ratios")
+    theme.section("📥  Data they need", "One sync, then the tickers and the debt ratios")
     state = sync_status(get_state())
     data_lab._render_sync(state)
 

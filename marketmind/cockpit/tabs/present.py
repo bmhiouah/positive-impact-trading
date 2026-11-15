@@ -1,4 +1,4 @@
-"""Present — run the algo and watch what it is doing right now."""
+"""Trading — run the algo and watch positions and orders."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ from marketmind.journal import allocation_of
 
 def render(store=None) -> None:
     theme.heading(
-        "Present",
-        "Run the algo. Watch the open positions and the orders as they go out.",
+        "📈 Trading",
+        "Start or stop the algo, and watch the positions and the orders.",
     )
 
     state = sync_status(get_state())
@@ -33,18 +33,18 @@ def render(store=None) -> None:
 
     start, stop, read = st.columns(3)
     with start:
-        if st.button("Start algo", type="primary", disabled=state.algo_running,
+        if st.button("▶  Start algo", type="primary", disabled=state.algo_running,
                      width="stretch", key="start_algo"):
             with st.spinner("Connect → read capital → start trading…"):
                 start_algo()
             st.rerun()
     with stop:
-        if st.button("Stop algo", disabled=not state.algo_running,
+        if st.button("⏹  Stop algo", disabled=not state.algo_running,
                      width="stretch", key="stop_algo"):
             stop_algo()
             st.rerun()
     with read:
-        if st.button("Read account", disabled=state.algo_running,
+        if st.button("↻  Read account", disabled=state.algo_running,
                      width="stretch", key="read_account"):
             with st.spinner("Connecting → reading account → disconnecting…"):
                 refresh_snapshot()
@@ -98,14 +98,14 @@ def render(store=None) -> None:
         with note:
             theme.callout(
                 "No instrument has fresh history yet, so the algo has nothing "
-                "it can honestly trade. Prepare the data under Future.",
+                "it can honestly trade. Prepare the data on Strategies.",
                 tone="warn", caption="Before you start",
             )
         with jump:
-            if st.button("Open Future", width="stretch", key="present_to_future"):
-                theme.go("Future")
+            if st.button("🧪  Strategies", width="stretch", key="present_to_future"):
+                theme.go("Strategies")
 
-    theme.section("Open positions", "What is held right now")
+    theme.section("📂  Open positions", "What is held right now")
     if not state.algo_running:
         theme.empty(
             "The algo is stopped",
@@ -117,7 +117,7 @@ def render(store=None) -> None:
     else:
         theme.empty("Flat", "No open long position.")
 
-    theme.section("Orders", "Sent on this session, newest first")
+    theme.section("🧾  Orders", "Sent on this session, newest first")
     coverage = get_market().coverage()
     _diagnosis(state, journal, coverage)
     if state.algo_running:
@@ -129,4 +129,4 @@ def render(store=None) -> None:
         recent = journal.orders(limit=12)
         _orders_table(recent, currency)
         if recent:
-            st.caption("Latest orders on record. The full list is under Past.")
+            st.caption("Latest orders on record. The full list is in the Journal.")

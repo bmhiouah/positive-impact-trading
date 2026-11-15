@@ -54,7 +54,7 @@ client occupying client id 1.
 ## Running it
 
 ```bash
-# Cockpit (Present is the first page)
+# Cockpit (Trading is the first page)
 python scripts/run_cockpit.py                 # or: streamlit run marketmind/cockpit/app.py
 
 # Bot on its own (Ctrl+C to stop)
@@ -69,14 +69,14 @@ Use the project interpreter — the default `python3` has no `ib_insync`:
 
 ### The daily routine
 
-1. **Future → Sync from IBKR.** One short-lived session pulls contract
+1. **🧪 Strategies → Sync from IBKR.** One short-lived session pulls contract
    metadata, daily bars and delayed quotes for every active ticker, refreshes
    the account snapshot and writes the journal row. Do this once a day.
-2. **Present → Start algo.** Connects first, reads capital from the API,
+2. **📈 Trading → Start algo.** Connects first, reads capital from the API,
    writes the baseline and the day row, then starts the loop. The first cycle
    also refreshes stale data **over that same connection**. Open positions and
    orders sent this session stay on this page.
-3. **Past.** How the paper capital moved, trading separated from interest,
+3. **📒 Journal.** How the paper capital moved, trading separated from interest,
    and every bracket grouped by stock.
 
 Only one connection may exist at a time: manual sync and Read account are
@@ -88,9 +88,9 @@ positions stay protected.
 
 | Page | What it is for |
 |---|---|
-| **Present** | Now. Start and stop the algo, read the account, see open positions and the orders as they go out |
-| **Future** | Strategies that might be used later, what each one still needs, the universe, debt ratios and price history |
-| **Past** | How the capital evolved, orders by stock, a rule replay on past bars, and the daily journal |
+| **📈 Trading** | Start and stop the algo, read the account, see open positions and the orders as they go out |
+| **🧪 Strategies** | The rules, what each one still needs, the universe, debt ratios and price history |
+| **📒 Journal** | How the capital moved, orders by stock, a rule replay on past bars, and the daily rows |
 
 ## Data and strategies
 
@@ -102,7 +102,7 @@ active instrument with bar count, freshness, quote, fundamentals and status
 (`ready` / `partial` / `empty`).
 
 IBKR **refuses `reqFundamentalData` on this paper account (error 10358)**, so
-debt-to-market-cap ratios and excluded sectors are entered from **Future →
+debt-to-market-cap ratios and excluded sectors are entered from **Strategies →
 Debt ratios and sectors**. They go into the same `fundamental_data` table the
 compliance gate reads — there is no parallel source of truth. Whitelisted impact
 ETFs are exempt.
@@ -177,7 +177,7 @@ marketmind/
   data/                         SQLite store + typed models
   live_trading.py               LiveTradingRunner + CLI entry point
   cockpit/
-    app.py                      three pages: Present, Future, Past
+    app.py                      three pages: Trading, Strategies, Journal
     theme.py                    shared visual system
     state.py                    process-wide runner state, refresh, data sync
     tabs/                       overview · data_lab · strategies · trading · journal

@@ -1,8 +1,8 @@
 """Cockpit shell — three pages, one job each.
 
-    Present   run the algo and watch positions and orders
-    Future    strategies that might be used, and the data they need
-    Past      how the capital evolved, and what was sent
+    Trading      run the algo and watch positions and orders
+    Strategies   rules that might be used, and the data they need
+    Journal      how the capital moved, and what was sent
 """
 
 from __future__ import annotations
@@ -25,19 +25,19 @@ st.set_page_config(
 theme.apply()
 
 MODES = {
-    "Present": present.render,
-    "Future": future.render,
-    "Past": past.render,
+    "Trading": present.render,
+    "Strategies": future.render,
+    "Journal": past.render,
 }
 LABELS = {
-    "Present": "Present  ·  now",
-    "Future": "Future  ·  strategies",
-    "Past": "Past  ·  record",
+    "Trading": "📈  Trading",
+    "Strategies": "🧪  Strategies",
+    "Journal": "📒  Journal",
 }
 
 state = sync_status(get_state())
-algo = "Algo running" if state.algo_running else "Algo stopped"
-gateway = "Gateway connected" if state.ibkr_connected else "Gateway idle"
+algo = "🟢 Algo running" if state.algo_running else "⚪ Algo stopped"
+gateway = "🔗 Gateway on" if state.ibkr_connected else "🔌 Gateway idle"
 account = f" · {theme.esc(state.ibkr_account)}" if state.ibkr_account else ""
 st.markdown(
     "<div class='pit-topline'><b>Positive Impact</b>"
@@ -50,7 +50,7 @@ st.markdown(
 mode = st.segmented_control(
     "Section",
     list(MODES),
-    default="Present",
+    default="Trading",
     selection_mode="single",
     required=True,
     key=theme.NAV_KEY,

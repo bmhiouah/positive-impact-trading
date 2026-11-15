@@ -95,13 +95,13 @@ def render_ideas(store=None) -> None:
                    f"SL −{config.STOP_LOSS_PCT:.0%}"),
     ])
 
-    theme.section("Catalogue", "Each card says whether the stored data can support it")
+    theme.section("📚  Catalogue", "Each card says whether the stored data can support it")
     cols = st.columns(2)
     for index, item in enumerate(availability):
         with cols[index % 2]:
             st.markdown(_spec_card(item), unsafe_allow_html=True)
 
-    theme.section("What they would buy now")
+    theme.section("🎯  What they would buy now")
     choices = ["All ready strategies"] + [i["name"] for i in availability]
     selected = st.selectbox("Strategy", choices, key="signal_strategy")
     if selected == "All ready strategies":
@@ -137,7 +137,7 @@ def render_replay(store=None) -> None:
     if not with_bars or not replayable:
         theme.empty(
             "Replay needs price history",
-            "Sync at least one instrument under Future first.",
+            "Sync at least one instrument on Strategies first.",
         )
         return
     c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
@@ -187,7 +187,7 @@ def render_replay(store=None) -> None:
 
 
 def _render_compare(store, symbols, availability) -> None:
-    theme.section("Side by side")
+    theme.section("⚖️  Side by side")
     counts = []
     for item in availability:
         signals_for = strategy_catalog.run(item["key"], symbols, store)
