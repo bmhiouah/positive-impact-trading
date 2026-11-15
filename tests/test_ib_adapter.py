@@ -102,9 +102,10 @@ def test_protected_entry_is_a_buy_plus_a_gtc_stop() -> None:
             return self.next_id
 
     fake_ib = SimpleNamespace(client=FakeClient())
-    parent, stop_loss = build_protected_entry(
+    parent, stop_loss, target = build_protected_entry(
         fake_ib, "BUY", 4.0, None, 92.0, account="DU123"
     )
+    assert target is None
     assert parent.action == "BUY" and parent.orderType == "MKT"
     assert parent.totalQuantity == 4.0
     assert parent.transmit is False

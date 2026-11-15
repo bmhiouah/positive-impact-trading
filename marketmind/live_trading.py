@@ -44,7 +44,7 @@ from marketmind.data import DataStore
 from marketmind.journal import PaperJournal
 from marketmind.market_data import MarketDataService
 from marketmind.universe import Universe
-from marketmind import momentum, strategy_catalog
+from marketmind import contest, momentum
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +84,7 @@ class LiveTradingRunner:
         self._last_data_sync = 0.0
         self._last_decision_day: Optional[str] = None
         self._last_sync_day: Optional[str] = None
+        self._live_rule = contest.INCUMBENT
 
     # ------------------------------------------------------------------
     # Lifecycle — connection first, trading second
@@ -302,7 +303,8 @@ class LiveTradingRunner:
             logger.warning("Could not update open brackets: %s", exc)
 
     def _intent(self, symbol: str, side: OrderSide, quantity: float, *,
-                stop_price: Optional[float] = None) -> OrderIntent:
+                stop_price: Optional[float] = None,
+                target_price: Optional[float] = None) -> OrderIntent:
         """Build an order the compliance gate can judge.
 
         The whitelists live in the compliance module. A new impact ETF has to
@@ -325,6 +327,7 @@ class LiveTradingRunner:
             is_impact_etf=is_impact_etf,
             is_spot_metal=is_spot_metal,
             stop_price=stop_price,
+            target_price=target_price,
         )
 
     def _positions(self) -> Dict[str, Dict[str, Any]]:
@@ -341,7 +344,8 @@ class LiveTradingRunner:
         """Send one buy plus its stop. Returns submitted, blocked, skipped or error."""
         symbol = signal["symbol"]
         intent = self._intent(symbol, OrderSide.BUY, quantity,
-                              stop_price=float(signal["stop"]))
+                              stop_price=float(signal["stop"]),
+                              target_price=signal.get("target"))
         try:
             result = self._adapter.submit_order(intent)
         except Exception as exc:  # noqa: BLE001
@@ -366,27 +370,28 @@ class LiveTradingRunner:
             entry_type=result.get("entry_type", "MKT"),
             entry_price=result.get("entry_price"),
             reference_price=result["reference_price"],
-            take_profit_order_id=None, take_profit_price=None,
+            take_profit_order_id=result.get("take_profit_order_id"),
+            take_profit_price=result.get("take_profit_price"),
             stop_loss_order_id=result["stop_loss_order_id"],
             stop_loss_price=result["stop_loss_price"],
             status=result.get("status", "Submitted"),
             account_id=snap.account_id,
-            note=(f"{signal.get('strategy_name', '12-month momentum')} · "
-                  f"stop {result['stop_loss_price']:.2f} · "
-                  f"12-1 {signal.get('momentum', 0):+.1%}"),
+            note=signal.get("rationale") or signal.get("strategy_name") or "",
         )
         logger.info("ENTRY SUBMITTED %s x%s stop %s (id=%s)",
                     symbol, quantity, result["stop_loss_price"], result.get("order_id"))
         return "submitted"
 
     def _flatten(self, symbol: str, quantity: float, stop_order_id: Optional[int],
-                 reason: str) -> bool:
-        """Cancel the resting stop and sell the shares we still hold."""
-        if stop_order_id:
+                 reason: str, target_order_id: Optional[int] = None) -> bool:
+        """Cancel the resting stop (and target) and sell the shares we still hold."""
+        for order_id, label in ((stop_order_id, "stop"), (target_order_id, "target")):
+            if not order_id:
+                continue
             try:
-                self._adapter.cancel_order(int(stop_order_id))
+                self._adapter.cancel_order(int(order_id))
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Could not cancel the stop on %s: %s", symbol, exc)
+                logger.warning("Could not cancel the %s on %s: %s", label, symbol, exc)
         held = self._positions().get(symbol)
         shares = float(held["position"]) if held else 0.0
         if shares <= 0:
@@ -434,17 +439,18 @@ class LiveTradingRunner:
                 continue
             if symbol in resting:
                 continue
-            bars = momentum.load_bars(self._store, symbol)
-            if bars is None:
+            book = contest.load_book(self._store, symbol)
+            if book is None:
                 continue
             entry_day = momentum.as_date(row["timestamp_utc"]) or session
-            action = momentum.hold_action(
-                bars["high"], bars["low"], bars["close"], bars["dates"],
-                entry_day, float(row["stop_loss_price"] or 0.0), session,
+            action = contest.manage(
+                book, self._live_rule, entry_day,
+                float(row["stop_loss_price"] or 0.0), session,
             )
             if action.kind == "exit":
                 if self._flatten(symbol, float(row["quantity"]),
-                                 row["stop_loss_order_id"], action.reason):
+                                 row["stop_loss_order_id"], action.reason,
+                                 row.get("take_profit_order_id")):
                     exited += 1
             elif action.kind == "raise" and row["stop_loss_order_id"]:
                 try:
@@ -460,29 +466,41 @@ class LiveTradingRunner:
                     logger.info("Stop on %s raised to %.2f", symbol, action.stop)
         return {"raised": raised, "exited": exited}
 
+    def _refresh_rule(self, symbols: List[str]) -> contest.Rule:
+        """Re-score the contest when the bars changed. Never blocks a cycle."""
+        try:
+            report = contest.ensure(self._store, symbols)
+            self._live_rule = report.holder
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Contest skipped: %s", exc)
+            self._live_rule = contest.live_rule(self._store)
+        return self._live_rule
+
     def _decide(self, snap, session: date) -> Dict[str, Any]:
         """One pass on the last completed session: exits first, then new buys."""
         symbols = self._universe.symbols()
         coverage = self._market.coverage()
-        live = next((item for item in strategy_catalog.availability(coverage)
-                     if item.get("live")), None)
-        if live is None or not live["ready"]:
+        ready = any(int(row.get("bars") or 0) >= config.MIN_BARS_FOR_SIGNALS
+                    for row in coverage)
+        if not ready:
             return {"signals": 0, "entries": 0, "approved": 0, "submitted": 0,
                     "blocked": 0, "skipped": 0, "raised": 0, "exited": 0,
                     "universe": len(symbols), "strategies_ready": 0,
                     "decided": False, "waiting": "history"}
 
+        self._refresh_rule(symbols)
         managed = self._manage_open(session)
-        entries = strategy_catalog.run_live(symbols, self._store, coverage)
         active = self._active_symbols()
-        approved = submitted = skipped = blocked = 0
-        for signal in entries:
-            symbol = signal["symbol"]
-            if symbol in active:
-                skipped += 1
+        approved = submitted = skipped = blocked = signals = 0
+        for symbol in symbols:
+            book = contest.load_book(self._store, symbol)
+            if book is None:
                 continue
-            bars = momentum.load_bars(self._store, symbol)
-            if bars is None:
+            reading = contest.read_symbol(book, self._live_rule, session)
+            if reading is None or not reading.buy:
+                continue
+            signals += 1
+            if symbol in active:
                 skipped += 1
                 continue
             prior = self._journal.last_closed(symbol)
@@ -492,17 +510,14 @@ class LiveTradingRunner:
                 outcome = prior["outcome"]
                 closed_day = momentum.as_date(prior["closed_at_utc"])
                 if closed_day is not None:
-                    exit_index = momentum.index_of_day(bars["dates"], closed_day)
-            snap_now = momentum.assess(
-                bars["high"], bars["low"], bars["close"], bars["dates"], session,
-            )
-            if snap_now is None or not momentum.should_enter(
-                bars["close"], snap_now.index, snap_now.momentum, outcome, exit_index,
+                    exit_index = momentum.index_of_day(book["dates"], closed_day)
+            if not contest.allow_entry(
+                book, self._live_rule, reading.index, outcome, exit_index,
             ):
                 skipped += 1
                 continue
             quantity = momentum.share_quantity(
-                self._portfolio_value, snap_now.close, snap_now.stop,
+                self._portfolio_value, reading.price, reading.stop,
                 cash=float(snap.total_cash_value or 0.0),
             )
             if quantity < 1:
@@ -510,9 +525,10 @@ class LiveTradingRunner:
                 logger.info("Skipping %s — the stop risks more than the budget "
                             "on a single share", symbol)
                 continue
-            # The signal carries the stop from the same bar the size used.
-            signal = {**signal, "stop": snap_now.stop, "price": snap_now.close,
-                      "momentum": snap_now.momentum}
+            signal = {
+                "symbol": symbol, "stop": reading.stop, "price": reading.price,
+                "target": reading.target, "rationale": reading.rationale,
+            }
             outcome_send = self._enter(signal, snap, quantity)
             if outcome_send == "submitted":
                 submitted += 1
@@ -526,8 +542,8 @@ class LiveTradingRunner:
                 skipped += 1
         self._last_decision_day = session.isoformat()
         return {
-            "signals": len(entries),
-            "entries": len(entries),
+            "signals": signals,
+            "entries": signals,
             "approved": approved,
             "submitted": submitted,
             "blocked": blocked,

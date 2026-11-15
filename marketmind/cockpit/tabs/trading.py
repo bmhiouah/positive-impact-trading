@@ -35,8 +35,7 @@ def _diagnosis(state, journal, coverage) -> None:
     elif result.get("decided") is False:
         return
     elif result.get("signals", 0) == 0:
-        parts.append("the 12-month momentum rule did not say buy on the last "
-                     "completed session")
+        parts.append("the live rule did not say buy on the last completed session")
     if missing_debt and result.get("signals", 0) > 0:
         parts.append(f"<b>{missing_debt}</b> instruments have no debt ratio — "
                      "the impact screen blocks those equities. Enter the ratio "

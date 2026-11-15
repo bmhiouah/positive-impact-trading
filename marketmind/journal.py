@@ -503,7 +503,7 @@ class PaperJournal:
         rows = self.conn.execute(
             """SELECT id, timestamp_utc, symbol, quantity, entry_price,
                       reference_price, stop_loss_order_id, stop_loss_price,
-                      exit_order_id
+                      exit_order_id, take_profit_order_id
                FROM paper_orders
                WHERE lower(COALESCE(outcome, 'open')) = 'open'
                  AND lower(status) NOT IN
@@ -512,7 +512,7 @@ class PaperJournal:
         ).fetchall()
         keys = ("id", "timestamp_utc", "symbol", "quantity", "entry_price",
                 "reference_price", "stop_loss_order_id", "stop_loss_price",
-                "exit_order_id")
+                "exit_order_id", "take_profit_order_id")
         return [dict(zip(keys, row)) for row in rows]
 
     def set_stop(self, symbol: str, stop_price: float) -> None:

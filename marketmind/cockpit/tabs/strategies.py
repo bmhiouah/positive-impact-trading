@@ -13,7 +13,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from marketmind import config, strategy_catalog
+from marketmind import config, contest, strategy_catalog
+from marketmind.momentum import session_day
 from marketmind.cockpit import theme
 from marketmind.cockpit.state import get_market
 
@@ -80,21 +81,74 @@ def _context(store):
     return market, coverage, symbols, availability, ready
 
 
+def _render_contest(store, symbols) -> contest.Report:
+    """Score the grid when the bars have changed, and show the holder."""
+    mark = contest.fingerprint(store, symbols) if symbols else "0:"
+    saved = contest.load(store)
+    if saved is None or saved.fingerprint != mark:
+        with st.spinner("Scoring the rules on the stored daily bars…"):
+            report = contest.ensure(store, symbols)
+    else:
+        report = saved
+    if st.button("Score the rules again", key="rerun_contest"):
+        with st.spinner("Scoring the rules on the stored daily bars…"):
+            report = contest.ensure(store, symbols, force=True)
+    holder = contest.describe(report.holder)
+    theme.section("🏁  The contest", "The live rule is whoever made more money on a later window")
+    theme.card_row([
+        theme.card("Live rule", "Promoted" if report.promoted else "Incumbent",
+                   holder),
+        theme.card("Selection ends", report.selection_end or "—",
+                   "The favorite is chosen on the days before this"),
+        theme.card("Later window", report.confirmation_start or "—",
+                   "A favorite is kept only if this window still pays"),
+        theme.card("Challengers shown", f"{len(report.rows)}",
+                   "Top of the grid, by money in the selection window"),
+    ])
+    theme.callout(report.reason or "The contest has not run yet.",
+                  tone="ok" if report.promoted else "info")
+    if report.rows:
+        st.dataframe(pd.DataFrame([{
+            "Rule": contest.describe(row.rule),
+            "Selection R": f"{row.selection_r:.2f}",
+            "Selection trades": row.selection_trades,
+            "Selection drawdown": f"{row.selection_dd:.2f}",
+            "Later R": f"{row.confirmation_r:.2f}",
+            "Later trades": row.confirmation_trades,
+            "Later drawdown": f"{row.confirmation_dd:.2f}",
+            "Sending": "Yes" if row.rule == report.holder else "",
+        } for row in report.rows]), width="stretch", hide_index=True)
+        st.caption(
+            "R is the result divided by the initial stop distance, after "
+            "five basis points of cost each way. A bar that touches the stop "
+            "and the target counts as the stop."
+        )
+    return report
+
+
 def render_ideas(store=None) -> None:
     """Catalogue and what the rules would buy on the data we have now."""
     market, coverage, symbols, availability, ready = _context(store)
-    current = strategy_catalog.run_live(symbols, store, coverage)
+    report = _render_contest(store, symbols)
+    buys = []
+    for symbol in symbols:
+        book = contest.load_book(store, symbol)
+        if book is None:
+            continue
+        reading = contest.read_symbol(book, report.holder, session_day())
+        if reading is not None and reading.buy:
+            buys.append(reading)
 
     theme.card_row([
         theme.card("Ready to study", f"{len(ready)} / {len(availability)}",
-                   "Live means the algo can send it"),
+                   "The live rule is chosen by the contest above"),
         theme.card("Instruments ready",
                    f"{sum(1 for r in coverage if r['status'] == 'ready')}",
                    f"of {len(symbols)} active tickers"),
-        theme.card("Live buys", f"{len(current)}",
-                   "12-month momentum, last completed day"),
-        theme.card("How a buy is protected", f"{config.ATR_MULTIPLE:.0f}× ATR",
-                   f"Stop trails up · risks {config.RISK_FRACTION:.1%} · no target"),
+        theme.card("Live buys", f"{len(buys)}",
+                   "Last completed day, for the rule being sent"),
+        theme.card("Risk per trade", f"{config.RISK_FRACTION:.1%}",
+                   "Of the account, measured to the stop"),
     ])
 
     theme.section("📚  Catalogue", "Each card says whether the stored data can support it")
@@ -211,8 +265,9 @@ def _render_compare(store, symbols, availability) -> None:
         theme.style_figure(fig, height=320, legend=True)
         st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     theme.callout(
-        "When the algo runs it sends only <b>12-month momentum</b>. The "
-        "impact screen still has to pass, and the stop is two average ranges "
-        "under the highest close since entry. The other cards are here to "
-        "study. A missing debt ratio blocks the buy and is not stored.",
+        "When the algo runs it sends the <b>live rule from the contest</b>. "
+        "Until a challenger wins the later window, that rule is 12-month "
+        "momentum with a trailing stop. The impact screen still has to pass. "
+        "The other cards are here to study. A missing debt ratio blocks the "
+        "buy and is not stored.",
     )
