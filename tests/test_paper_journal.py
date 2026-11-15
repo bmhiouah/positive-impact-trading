@@ -167,3 +167,21 @@ def test_settle_marks_take_profit_and_stop(journal) -> None:
     assert by_symbol["MSFT"]["outcome"] == "stop_loss"
     assert by_symbol["MSFT"]["result_pnl"] == pytest.approx(-4.0)
     assert journal.settle([{"order_id": 11, "price": 106.0}]) == 0
+
+
+def test_trailed_stop_and_momentum_exit_are_recorded(journal) -> None:
+    journal.record_bracket(
+        symbol="NVDA", side="BUY", quantity=10.0,
+        entry_order_id=30, entry_type="MKT", entry_price=100.0,
+        reference_price=100.0, take_profit_order_id=None,
+        take_profit_price=None, stop_loss_order_id=31,
+        stop_loss_price=92.0, status="Submitted",
+    )
+    journal.set_stop("NVDA", 96.5)
+    assert journal.open_trades()[0]["stop_loss_price"] == pytest.approx(96.5)
+    journal.attach_exit_order("NVDA", 40)
+    assert journal.settle([{"order_id": 40, "price": 110.0}]) == 1
+    row = journal.trades()[0]
+    assert row["outcome"] == "momentum"
+    assert row["result_pnl"] == pytest.approx(100.0)
+    assert journal.last_closed("NVDA")["outcome"] == "momentum"

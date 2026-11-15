@@ -22,9 +22,9 @@ from marketmind.broker.ib_adapter import (
     _maybe_num,
     _num,
     _pick_tag,
-    bracket_prices,
-    build_bracket,
+    build_protected_entry,
     clean_legacy_order_fields,
+    protective_stop,
 )
 from marketmind.compliance.engine import ImpactExecutionEngine
 from marketmind.compliance.rules import (
@@ -50,6 +50,7 @@ def _intent(limit_price=1.00):
         is_impact_etf=False,
         is_spot_metal=False,
         limit_price=limit_price,  # far below market: rests, never fills
+        stop_price=0.50,
     )
 
 
@@ -81,21 +82,17 @@ def test_clean_legacy_order_fields() -> None:
     assert order.nbboPriceCap is None
 
 
-def test_bracket_prices() -> None:
-    prices = bracket_prices(100.0)
-    assert prices.reference == 100.0
-    assert prices.take_profit == 105.0
-    assert prices.stop_loss == 97.0
-    assert prices.stop_loss < prices.reference < prices.take_profit
-    for bad in (0.0, -1.0, float("nan"), float("inf"), "nope"):
+def test_protective_stop_must_sit_below_the_reference() -> None:
+    assert protective_stop(100.0, 92.5) == 92.5
+    for bad in (0.0, -1.0, 100.0, 101.0, float("nan"), float("inf"), "nope"):
         with pytest.raises(ValueError):
-            bracket_prices(bad)
+            protective_stop(100.0, bad)
     with pytest.raises(ValueError):
-        bracket_prices(100.0, take_profit_pct=-1.0)
+        protective_stop(0.0, 1.0)
 
 
-def test_build_bracket_is_a_three_leg_bracket() -> None:
-    """Parent + TP + SL with parentId links and only ONE transmit=True."""
+def test_protected_entry_is_a_buy_plus_a_gtc_stop() -> None:
+    """Parent + stop, parentId link, and only the stop transmits."""
     class FakeClient:
         def __init__(self):
             self.next_id = 10
@@ -105,25 +102,22 @@ def test_build_bracket_is_a_three_leg_bracket() -> None:
             return self.next_id
 
     fake_ib = SimpleNamespace(client=FakeClient())
-    prices = bracket_prices(100.0)
-    parent, take_profit, stop_loss = build_bracket(
-        fake_ib, "BUY", 1.0, None, prices, account="DU123"
+    parent, stop_loss = build_protected_entry(
+        fake_ib, "BUY", 4.0, None, 92.0, account="DU123"
     )
     assert parent.action == "BUY" and parent.orderType == "MKT"
+    assert parent.totalQuantity == 4.0
     assert parent.transmit is False
-    assert take_profit.action == "SELL" and take_profit.orderType == "LMT"
-    assert take_profit.lmtPrice == 105.0 and take_profit.transmit is False
     assert stop_loss.action == "SELL" and stop_loss.orderType == "STP"
-    assert stop_loss.auxPrice == 97.0 and stop_loss.transmit is True
-    assert take_profit.parentId == parent.orderId
+    assert stop_loss.auxPrice == 92.0 and stop_loss.transmit is True
     assert stop_loss.parentId == parent.orderId
-    assert len({parent.orderId, take_profit.orderId, stop_loss.orderId}) == 3
-    for leg in (parent, take_profit, stop_loss):
+    assert parent.orderId != stop_loss.orderId
+    for leg in (parent, stop_loss):
         assert leg.eTradeOnly is False
         assert leg.firmQuoteOnly is False
         assert leg.nbboPriceCap is None
         assert leg.account == "DU123"
-        assert leg.tif == "DAY"
+        assert leg.tif == "GTC"
 
 
 def test_num_helpers_handle_ib_nan() -> None:
@@ -221,13 +215,11 @@ def test_live_market_data_and_bracket_round_trip() -> None:
         assert result["submitted"] is True
         assert result["order_id"] > 0
         assert result["status"] in ("Submitted", "PreSubmitted", "Filled")
-        assert result["stop_loss_price"] < result["reference_price"] \
-               < result["take_profit_price"]
-        assert result["take_profit_order_id"] != result["order_id"]
+        assert result["stop_loss_price"] < result["reference_price"]
+        assert result["take_profit_order_id"] is None
         assert result["stop_loss_order_id"] != result["order_id"]
 
-        ids = [result["order_id"], result["take_profit_order_id"],
-               result["stop_loss_order_id"]]
+        ids = [result["order_id"], result["stop_loss_order_id"]]
         assert adapter.cancel_orders(ids) >= 1
     finally:
         adapter.disconnect()

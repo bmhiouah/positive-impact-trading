@@ -13,7 +13,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from marketmind import config
 from marketmind.cockpit import theme
 from marketmind.cockpit.state import (
     get_journal, get_market, get_state, refresh_snapshot, sync_status,
@@ -132,6 +131,7 @@ _OUTCOME = {
     "open": "Open",
     "take_profit": "Take profit",
     "stop_loss": "Stop",
+    "momentum": "Trend ended",
 }
 
 
@@ -330,9 +330,8 @@ def render(store=None) -> None:
 
     # --- activity ------------------------------------------------------------
     theme.section(
-        "Latest brackets",
-        f"BUY + take profit +{config.TAKE_PROFIT_PCT:.0%} / "
-        f"stop loss −{config.STOP_LOSS_PCT:.0%}",
+        "Latest orders",
+        "A buy, a stop that trails, and no fixed take-profit",
     )
     recent = journal.orders(limit=8)
     _orders_table(recent, currency)

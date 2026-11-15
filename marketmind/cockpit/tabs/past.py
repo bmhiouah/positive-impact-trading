@@ -19,6 +19,7 @@ _OUTCOME = {
     "open": "Open",
     "take_profit": "Take profit",
     "stop_loss": "Stop",
+    "momentum": "Trend ended",
 }
 
 
@@ -72,12 +73,12 @@ def render(store=None) -> None:
             st.plotly_chart(_change_chart(history, currency),
                             width="stretch", config={"displayModeBar": False})
 
-    theme.section("🧾  Orders by stock", "Open, take profit, or stop")
+    theme.section("🧾  Orders by stock", "Open, stopped, or the trend ended")
     theme.callout(
-        "<b>Open</b> means the bracket is still at IBKR. <b>Take profit</b> and "
-        "<b>Stop</b> are the leg that filled. The result is the difference from "
-        "the entry, before commission, and it appears the next time the Gateway "
-        "is read.",
+        "<b>Open</b> means the position is still on, with its stop at IBKR. "
+        "<b>Stop</b> means that stop filled. <b>Trend ended</b> means the "
+        "12-month reading turned flat and the shares were sold. The result is "
+        "the difference from the entry, before commission.",
     )
     if not orders:
         theme.empty(
@@ -86,8 +87,8 @@ def render(store=None) -> None:
         )
     else:
         grouped: dict[str, dict[str, float]] = defaultdict(
-            lambda: {"Open": 0, "Take profit": 0, "Stop": 0, "Result": 0.0,
-                     "Closed": 0}
+            lambda: {"Open": 0, "Take profit": 0, "Stop": 0, "Trend ended": 0,
+                     "Result": 0.0, "Closed": 0}
         )
         for order in orders:
             bucket = grouped[order["symbol"]]
@@ -100,8 +101,8 @@ def render(store=None) -> None:
             {
                 "Symbol": symbol,
                 "Open": int(counts["Open"]),
-                "Take profit": int(counts["Take profit"]),
                 "Stop": int(counts["Stop"]),
+                "Trend ended": int(counts["Trend ended"]),
                 "Result": (theme.money(counts["Result"], currency, signed=True)
                            if counts["Closed"] else "—"),
             }

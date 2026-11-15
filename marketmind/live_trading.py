@@ -1,11 +1,11 @@
-"""Live paper-trading runner for long-only strategies.
+"""Live paper-trading runner for the one momentum book.
 
 Lifecycle (this is what the cockpit's "Start Algo" button triggers):
 
     1. connect to the one IB Gateway paper session  <- mandatory, fails loudly
     2. read the account snapshot via the API         <- capital comes from HERE
     3. record the original paper money once          <- the journal baseline
-    4. only then start the trading thread            <- signals -> compliance -> brackets
+    4. only then start the trading thread            <- one rule, once a day
 
 The runner is fully synchronous and thread-based. Streamlit executes scripts
 on a thread with no persistent asyncio loop, so scheduling the bot as an
@@ -13,9 +13,10 @@ on a thread with no persistent asyncio loop, so scheduling the bot as an
 finished. The IB adapter owns its own event loop internally; the runner simply
 calls its thread-safe synchronous methods from a dedicated background thread.
 
-Long-only: the runner opens BUY positions only. Every entry is a TP/SL bracket,
-so exits are managed by IBKR and the lab never sends a naked order. Stopping
-the algo leaves the resting brackets in place so open positions stay protected.
+The thread checks the connection and reads fills on every poll. The buy, the
+trailing stop and the exit run once per New York session, on the last
+completed daily bar. A long entry is a market buy plus a GTC stop. There is
+no take-profit. Stopping the algo leaves that stop in place.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from marketmind import ib_compat  # noqa: F401
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from marketmind import config
@@ -43,13 +44,13 @@ from marketmind.data import DataStore
 from marketmind.journal import PaperJournal
 from marketmind.market_data import MarketDataService
 from marketmind.universe import Universe
-from marketmind import strategy_catalog
+from marketmind import momentum, strategy_catalog
 
 logger = logging.getLogger(__name__)
 
 
 class LiveTradingRunner:
-    """Runs long-only strategies continuously and submits TP/SL brackets."""
+    """Runs the 12-month momentum book and keeps its stops trailed."""
 
     def __init__(
         self,
@@ -81,6 +82,8 @@ class LiveTradingRunner:
         self._cycle_count = 0
         self._last_cycle_at: Optional[str] = None
         self._last_data_sync = 0.0
+        self._last_decision_day: Optional[str] = None
+        self._last_sync_day: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Lifecycle — connection first, trading second
@@ -256,19 +259,26 @@ class LiveTradingRunner:
             logger.debug("Could not read open orders: %s", exc)
         return active
 
-    def _maybe_sync_data(self) -> None:
+    def _maybe_sync_data(self, force: bool = False) -> None:
         """Refresh the universe through the ALREADY OPEN session.
 
         A second connection is forbidden, so the runner reuses its own adapter
         instead of opening a new client id 1 session. A cooldown prevents a
-        symbol IBKR cannot serve from being retried every 60 seconds.
+        symbol IBKR cannot serve from being retried every 60 seconds. The
+        first pass of a new session ignores that cooldown so the decision sees
+        the latest completed bar.
         """
         now = time.monotonic()
-        if now - self._last_data_sync < config.DATA_SYNC_COOLDOWN:
-            return
         coverage = self._market.coverage()
-        if coverage and all(row["status"] == "ready" for row in coverage):
+        short = any(int(row.get("bars") or 0) < config.MIN_BARS_FOR_SIGNALS
+                    for row in coverage)
+        fresh = bool(coverage) and not short and all(
+            row["status"] == "ready" for row in coverage
+        )
+        if fresh and not force:
             self._last_data_sync = now
+            return
+        if not force and now - self._last_data_sync < config.DATA_SYNC_COOLDOWN:
             return
         logger.info("Refreshing IBKR market data for %s instruments",
                     len(coverage))
@@ -291,126 +301,271 @@ class LiveTradingRunner:
         except Exception as exc:  # noqa: BLE001 - a fill read must not stop the cycle
             logger.warning("Could not update open brackets: %s", exc)
 
+    def _intent(self, symbol: str, side: OrderSide, quantity: float, *,
+                stop_price: Optional[float] = None) -> OrderIntent:
+        """Build an order the compliance gate can judge.
+
+        The whitelists live in the compliance module. A new impact ETF has to
+        be recognised here and at the gate from that one list.
+        """
+        is_impact_etf = symbol in WHITELISTED_ETFS
+        is_spot_metal = symbol in WHITELISTED_METALS
+        asset_class = (AssetClass.ETF if is_impact_etf
+                       else AssetClass.SPOT_METAL if is_spot_metal
+                       else AssetClass.EQUITY)
+        fund = self._store.get_fundamental_data(symbol)
+        return OrderIntent(
+            symbol=symbol,
+            asset_class=asset_class,
+            side=side,
+            quantity=float(quantity),
+            account_type=AccountType.CASH,
+            sector=fund.sector if fund else None,
+            debt_to_market_cap=(fund.debt_to_market_cap if fund else None),
+            is_impact_etf=is_impact_etf,
+            is_spot_metal=is_spot_metal,
+            stop_price=stop_price,
+        )
+
+    def _positions(self) -> Dict[str, Dict[str, Any]]:
+        held: Dict[str, Dict[str, Any]] = {}
+        try:
+            for position in self._adapter.get_positions():
+                if position["position"] > 0:
+                    held[position["symbol"]] = position
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not read positions: %s", exc)
+        return held
+
+    def _enter(self, signal: Dict[str, Any], snap, quantity: int) -> str:
+        """Send one buy plus its stop. Returns submitted, blocked, skipped or error."""
+        symbol = signal["symbol"]
+        intent = self._intent(symbol, OrderSide.BUY, quantity,
+                              stop_price=float(signal["stop"]))
+        try:
+            result = self._adapter.submit_order(intent)
+        except Exception as exc:  # noqa: BLE001
+            self._journal.record_bracket(
+                symbol=symbol, side="BUY", quantity=quantity,
+                entry_order_id=None, entry_type="MKT",
+                entry_price=None, reference_price=float(signal["price"]),
+                take_profit_order_id=None, take_profit_price=None,
+                stop_loss_order_id=None, stop_loss_price=float(signal["stop"]),
+                status="error", account_id=snap.account_id, note=str(exc),
+            )
+            logger.error("Entry failed for %s: %s", symbol, exc)
+            return "error"
+        if not result.get("approved"):
+            logger.info("Not sent for %s: %s", symbol, result.get("rejection_reason"))
+            return "blocked"
+        if not result.get("submitted"):
+            return "skipped"
+        self._journal.record_bracket(
+            symbol=symbol, side="BUY", quantity=quantity,
+            entry_order_id=result.get("order_id"),
+            entry_type=result.get("entry_type", "MKT"),
+            entry_price=result.get("entry_price"),
+            reference_price=result["reference_price"],
+            take_profit_order_id=None, take_profit_price=None,
+            stop_loss_order_id=result["stop_loss_order_id"],
+            stop_loss_price=result["stop_loss_price"],
+            status=result.get("status", "Submitted"),
+            account_id=snap.account_id,
+            note=(f"{signal.get('strategy_name', '12-month momentum')} · "
+                  f"stop {result['stop_loss_price']:.2f} · "
+                  f"12-1 {signal.get('momentum', 0):+.1%}"),
+        )
+        logger.info("ENTRY SUBMITTED %s x%s stop %s (id=%s)",
+                    symbol, quantity, result["stop_loss_price"], result.get("order_id"))
+        return "submitted"
+
+    def _flatten(self, symbol: str, quantity: float, stop_order_id: Optional[int],
+                 reason: str) -> bool:
+        """Cancel the resting stop and sell the shares we still hold."""
+        if stop_order_id:
+            try:
+                self._adapter.cancel_order(int(stop_order_id))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not cancel the stop on %s: %s", symbol, exc)
+        held = self._positions().get(symbol)
+        shares = float(held["position"]) if held else 0.0
+        if shares <= 0:
+            logger.info("%s is already flat after the stop cancel", symbol)
+            return False
+        intent = self._intent(symbol, OrderSide.SELL, shares)
+        try:
+            result = self._adapter.submit_close(intent)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Exit failed for %s: %s", symbol, exc)
+            return False
+        if not result.get("submitted"):
+            logger.info("Exit not sent for %s: %s", symbol,
+                        result.get("rejection_reason"))
+            return False
+        self._journal.attach_exit_order(symbol, int(result["order_id"]))
+        logger.info("EXIT SUBMITTED %s x%s (%s, id=%s)",
+                    symbol, shares, reason, result["order_id"])
+        return True
+
+    def _resting_sells(self) -> Optional[set[str]]:
+        """Symbols with a working sell. None when the book cannot be read."""
+        try:
+            orders = self._adapter.get_open_orders()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not read resting orders: %s", exc)
+            return None
+        # A resting stop is also a sell. Only a market sell means an exit is
+        # already working, so the trail and a second exit must wait.
+        return {
+            order["symbol"] for order in orders
+            if order.get("side") == "SELL" and order.get("order_type") == "MKT"
+        }
+
+    def _manage_open(self, session: date) -> Dict[str, int]:
+        """Trail stops and leave positions the completed bar no longer wants."""
+        raised = exited = 0
+        held = self._positions()
+        resting = self._resting_sells()
+        if resting is None:
+            return {"raised": raised, "exited": exited}
+        for row in self._journal.open_trades():
+            symbol = row["symbol"]
+            if symbol not in held:
+                continue
+            if symbol in resting:
+                continue
+            bars = momentum.load_bars(self._store, symbol)
+            if bars is None:
+                continue
+            entry_day = momentum.as_date(row["timestamp_utc"]) or session
+            action = momentum.hold_action(
+                bars["high"], bars["low"], bars["close"], bars["dates"],
+                entry_day, float(row["stop_loss_price"] or 0.0), session,
+            )
+            if action.kind == "exit":
+                if self._flatten(symbol, float(row["quantity"]),
+                                 row["stop_loss_order_id"], action.reason):
+                    exited += 1
+            elif action.kind == "raise" and row["stop_loss_order_id"]:
+                try:
+                    moved = self._adapter.modify_stop(
+                        int(row["stop_loss_order_id"]), action.stop,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Could not raise the stop on %s: %s", symbol, exc)
+                    continue
+                if moved:
+                    self._journal.set_stop(symbol, action.stop)
+                    raised += 1
+                    logger.info("Stop on %s raised to %.2f", symbol, action.stop)
+        return {"raised": raised, "exited": exited}
+
+    def _decide(self, snap, session: date) -> Dict[str, Any]:
+        """One pass on the last completed session: exits first, then new buys."""
+        symbols = self._universe.symbols()
+        coverage = self._market.coverage()
+        live = next((item for item in strategy_catalog.availability(coverage)
+                     if item.get("live")), None)
+        if live is None or not live["ready"]:
+            return {"signals": 0, "entries": 0, "approved": 0, "submitted": 0,
+                    "blocked": 0, "skipped": 0, "raised": 0, "exited": 0,
+                    "universe": len(symbols), "strategies_ready": 0,
+                    "decided": False, "waiting": "history"}
+
+        managed = self._manage_open(session)
+        entries = strategy_catalog.run_live(symbols, self._store, coverage)
+        active = self._active_symbols()
+        approved = submitted = skipped = blocked = 0
+        for signal in entries:
+            symbol = signal["symbol"]
+            if symbol in active:
+                skipped += 1
+                continue
+            bars = momentum.load_bars(self._store, symbol)
+            if bars is None:
+                skipped += 1
+                continue
+            prior = self._journal.last_closed(symbol)
+            exit_index = None
+            outcome = None
+            if prior and prior.get("closed_at_utc"):
+                outcome = prior["outcome"]
+                closed_day = momentum.as_date(prior["closed_at_utc"])
+                if closed_day is not None:
+                    exit_index = momentum.index_of_day(bars["dates"], closed_day)
+            snap_now = momentum.assess(
+                bars["high"], bars["low"], bars["close"], bars["dates"], session,
+            )
+            if snap_now is None or not momentum.should_enter(
+                bars["close"], snap_now.index, snap_now.momentum, outcome, exit_index,
+            ):
+                skipped += 1
+                continue
+            quantity = momentum.share_quantity(
+                self._portfolio_value, snap_now.close, snap_now.stop,
+                cash=float(snap.total_cash_value or 0.0),
+            )
+            if quantity < 1:
+                skipped += 1
+                logger.info("Skipping %s — the stop risks more than the budget "
+                            "on a single share", symbol)
+                continue
+            # The signal carries the stop from the same bar the size used.
+            signal = {**signal, "stop": snap_now.stop, "price": snap_now.close,
+                      "momentum": snap_now.momentum}
+            outcome_send = self._enter(signal, snap, quantity)
+            if outcome_send == "submitted":
+                submitted += 1
+                approved += 1
+                active.add(symbol)
+            elif outcome_send == "blocked":
+                blocked += 1
+            elif outcome_send == "error":
+                continue
+            else:
+                skipped += 1
+        self._last_decision_day = session.isoformat()
+        return {
+            "signals": len(entries),
+            "entries": len(entries),
+            "approved": approved,
+            "submitted": submitted,
+            "blocked": blocked,
+            "skipped": skipped,
+            "raised": managed["raised"],
+            "exited": managed["exited"],
+            "universe": len(symbols),
+            "strategies_ready": 1,
+            "decided": True,
+            "waiting": None,
+        }
+
     def _run_trading_cycle(self) -> Dict[str, Any]:
         logger.info("Starting trading cycle at %s",
                     datetime.now(timezone.utc).isoformat())
 
-        # Step 0: real account snapshot -> journal (baseline, daily row, P&L).
         snap = self._adapter.get_account_snapshot()
         self._journal.record(snap)
         self._portfolio_value = float(snap.net_liquidation)
         self._settle_open_brackets()
 
-        # Step 0b: make the lab self-sufficient. The first cycle with an empty
-        # or stale price history ingests contracts, daily bars and quotes over
-        # this same connection, so strategies have real data to work with.
+        session = momentum.session_day()
+        force_sync = self._last_sync_day != session.isoformat()
+        if force_sync:
+            self._last_sync_day = session.isoformat()
         try:
-            self._maybe_sync_data()
-        except Exception as exc:  # noqa: BLE001 - never let data stop trading
+            self._maybe_sync_data(force=force_sync)
+        except Exception as exc:  # noqa: BLE001 - never let data stop the cycle
             logger.warning("Automatic data sync failed: %s", exc)
 
-        # Step 1: run only the strategies the CURRENT data actually supports.
-        # The universe comes from the instruments table, so adding a stock in
-        # the cockpit automatically extends every subsequent cycle.
-        symbols = self._universe.symbols()
-        coverage = self._market.coverage()
-        ready = [s["name"] for s in strategy_catalog.availability(coverage)
-                 if s["ready"]]
-        entries = strategy_catalog.run_all_ready(symbols, self._store, coverage)
-        if not entries:
-            return {"signals": 0, "entries": 0, "approved": 0,
-                    "submitted": 0, "blocked": 0, "skipped": 0,
-                    "universe": len(symbols), "strategies_ready": len(ready)}
+        if self._last_decision_day == session.isoformat():
+            symbols = self._universe.symbols()
+            return {"signals": 0, "entries": 0, "approved": 0, "submitted": 0,
+                    "blocked": 0, "skipped": 0, "raised": 0, "exited": 0,
+                    "universe": len(symbols), "strategies_ready": 1,
+                    "decided": False, "waiting": None}
 
-        final_signals = entries
-
-        active = self._active_symbols()
-        approved_count = submitted_count = skipped_count = blocked_count = 0
-
-        for signal in final_signals:
-            if signal["symbol"] in active:
-                skipped_count += 1
-                logger.info("Skipping %s — position or bracket already open",
-                            signal["symbol"])
-                continue
-
-            # The compliance module owns these whitelists. Never duplicate
-            # them here: a new impact ETF must be recognised everywhere at once.
-            is_impact_etf = signal["symbol"] in WHITELISTED_ETFS
-            is_spot_metal = signal["symbol"] in WHITELISTED_METALS
-            asset_class = (AssetClass.ETF if is_impact_etf
-                           else AssetClass.SPOT_METAL if is_spot_metal
-                           else AssetClass.EQUITY)
-
-            # The compliance gate needs real fundamental data. It is supplied
-            # from the data layer (contract metadata + values entered in the
-            # cockpit); a missing debt ratio correctly blocks the order.
-            fund = self._store.get_fundamental_data(signal["symbol"])
-            intent = OrderIntent(
-                symbol=signal["symbol"],
-                asset_class=asset_class,
-                side=OrderSide.BUY,
-                quantity=config.QUANTITY,
-                account_type=AccountType.CASH,
-                sector=fund.sector if fund else None,
-                debt_to_market_cap=(fund.debt_to_market_cap if fund else None),
-                is_impact_etf=is_impact_etf,
-                is_spot_metal=is_spot_metal,
-            )
-            try:
-                result = self._adapter.submit_order(intent)
-            except Exception as exc:  # noqa: BLE001
-                self._journal.record_bracket(
-                    symbol=signal["symbol"], side="BUY", quantity=config.QUANTITY,
-                    entry_order_id=None, entry_type="BRACKET",
-                    entry_price=None, reference_price=0.0,
-                    take_profit_order_id=None, take_profit_price=0.0,
-                    stop_loss_order_id=None, stop_loss_price=0.0,
-                    status="error", account_id=snap.account_id, note=str(exc),
-                )
-                logger.error("Bracket failed for %s: %s", signal["symbol"], exc)
-                continue
-
-            if not result.get("approved"):
-                blocked_count += 1
-                logger.info("Not sent for %s: %s", signal["symbol"],
-                            result.get("rejection_reason"))
-                continue
-
-            approved_count += 1
-            if result.get("submitted"):
-                submitted_count += 1
-                active.add(signal["symbol"])
-                self._journal.record_bracket(
-                    symbol=signal["symbol"], side="BUY",
-                    quantity=config.QUANTITY,
-                    entry_order_id=result.get("order_id"),
-                    entry_type=result.get("entry_type", "MKT"),
-                    entry_price=result.get("entry_price"),
-                    reference_price=result["reference_price"],
-                    take_profit_order_id=result["take_profit_order_id"],
-                    take_profit_price=result["take_profit_price"],
-                    stop_loss_order_id=result["stop_loss_order_id"],
-                    stop_loss_price=result["stop_loss_price"],
-                    status=result.get("status", "Submitted"),
-                    account_id=snap.account_id,
-                    note=f"{signal.get('strategy_name', 'strategy')} · "
-                         f"TP +{config.TAKE_PROFIT_PCT:.0%} / "
-                         f"SL -{config.STOP_LOSS_PCT:.0%}",
-                )
-                logger.info("BRACKET SUBMITTED to IBKR: %s %s (id=%s)",
-                            signal["symbol"], config.QUANTITY, result.get("order_id"))
-
-        return {
-            "signals": len(final_signals),
-            "entries": len(final_signals),
-            "approved": approved_count,
-            "submitted": submitted_count,
-            "blocked": blocked_count,
-            "skipped": skipped_count,
-            "universe": len(symbols),
-            "strategies_ready": len(ready),
-        }
+        return self._decide(snap, session)
 
 
 def run_continuous_trading(
@@ -437,7 +592,7 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Long-only paper trading runner (TP/SL brackets)"
+        description="Long-only paper trading runner (12-month momentum, trailing stop)"
     )
     parser.add_argument("--db-path", default=config.DB_PATH,
                         help="Path to the paper journal SQLite file")

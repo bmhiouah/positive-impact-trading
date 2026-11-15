@@ -1,7 +1,7 @@
 """Trading — Start / Stop Algo, plus a real explanation of what each cycle did.
 
 No connection settings on purpose: one fixed IB Gateway paper session, capital
-read from the account via the API, systematic TP/SL brackets on every entry.
+read from the account via the API, one momentum rule, a trailing stop.
 """
 
 from __future__ import annotations
@@ -29,12 +29,14 @@ def _diagnosis(state, journal, coverage) -> None:
     if stale:
         parts.append(f"<b>{stale}/{len(coverage)}</b> instruments lack enough "
                      "fresh daily bars — sync them on Strategies")
-    if result.get("strategies_ready", 0) == 0:
-        parts.append("<b>no strategy is data-ready</b>, so no signal can be "
-                     "generated")
+    if result.get("strategies_ready", 0) == 0 or result.get("waiting") == "history":
+        parts.append("the live rule needs a year of daily bars before it can "
+                     "say buy — sync on Strategies so the history can lengthen")
+    elif result.get("decided") is False:
+        return
     elif result.get("signals", 0) == 0:
-        parts.append("all ready strategies evaluated but <b>no BUY rule "
-                     "triggered</b> on the current bars")
+        parts.append("the 12-month momentum rule did not say buy on the last "
+                     "completed session")
     if missing_debt and result.get("signals", 0) > 0:
         parts.append(f"<b>{missing_debt}</b> instruments have no debt ratio — "
                      "the impact screen blocks those equities. Enter the ratio "
@@ -55,8 +57,8 @@ def render(store=None) -> None:
         "Execution",
         "Trading",
         "Start opens the paper session, reads capital from the account, and "
-        "only then runs the loop. Every entry is a buy with a take-profit "
-        "and a stop-loss.",
+        "only then runs the loop. Each entry is a buy with a stop that "
+        "trails the stock's own daily range. There is no fixed take-profit.",
     )
 
     state = sync_status(get_state())
@@ -78,8 +80,8 @@ def render(store=None) -> None:
             stop_algo()
             st.rerun()
         st.caption(
-            "Stopping the algo leaves resting brackets in place at IBKR, so "
-            "open positions stay protected."
+            "Stopping the algo leaves the stop resting at IBKR, so an open "
+            "position stays protected."
         )
     with status:
         pills = [
@@ -110,11 +112,12 @@ def render(store=None) -> None:
 
     if state.algo_running:
         theme.callout(
-            f"Each {config.POLL_INTERVAL:.0f}s: read account → write journal → "
-            "refresh stale data over this same connection → evaluate every "
-            "ready strategy → impact screen → send a BUY with take profit "
-            f"<b>+{config.TAKE_PROFIT_PCT:.0%}</b> and stop loss "
-            f"<b>−{config.STOP_LOSS_PCT:.0%}</b>.",
+            f"Every {config.POLL_INTERVAL:.0f}s the account is read and fills "
+            "are checked. Once per session, on the last completed day: "
+            "12-month momentum, then the impact screen, then a buy sized so "
+            f"the stop risks <b>{config.RISK_FRACTION:.1%}</b> of the account. "
+            f"The stop is <b>{config.ATR_MULTIPLE:.0f}×</b> the 20-day range "
+            "and only moves up.",
             tone="info", caption="Current cycle",
         )
     _diagnosis(state, journal, coverage)
@@ -153,8 +156,7 @@ def render(store=None) -> None:
                 "When (UTC)": o["timestamp_utc"][:19].replace("T", " "),
                 "Symbol": o["symbol"], "Status": str(o["status"] or "").title(),
                 "Reference": theme.money_or_dash(o["reference_price"], currency),
-                "Take profit": theme.money_or_dash(o["take_profit_price"], currency),
-                "Stop loss": theme.money_or_dash(o["stop_loss_price"], currency),
+                "Stop": theme.money_or_dash(o["stop_loss_price"], currency),
             } for o in orders]), width="stretch", hide_index=True)
         else:
             theme.empty("No orders sent yet",
@@ -167,7 +169,6 @@ def render(store=None) -> None:
             f"(type {config.MARKET_DATA_TYPE}). Capital is read from "
             "NetLiquidation, never typed in. Start tears down any previous "
             "run, connects, writes the journal, then starts the trading "
-            "thread. Each entry is a parent BUY plus a take-profit limit and "
-            "a stop-loss stop. Stopping the algo leaves those brackets resting "
-            "at IBKR."
+            "thread. Each entry is a parent BUY plus a GTC stop. The stop "
+            "trails up. Stopping the algo leaves that stop resting at IBKR."
         )

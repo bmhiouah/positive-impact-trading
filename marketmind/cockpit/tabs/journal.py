@@ -92,7 +92,7 @@ def render(store=None) -> None:
                         "Read the account from IBKR or start the algo.")
 
     with tabs[1]:
-        theme.section("Every order sent", "Three legs per entry, always")
+        theme.section("Every order sent", "A buy and the stop that protects it")
         if orders:
             st.dataframe(pd.DataFrame([{
                 "When (UTC)": o["timestamp_utc"][:19].replace("T", " "),

@@ -12,7 +12,7 @@ from marketmind.cockpit.tabs import data_lab, strategies
 def render(store=None) -> None:
     theme.heading(
         "🧪 Strategies",
-        "Rules you can run, and the data each one still needs.",
+        "The live rule, the rules kept for study, and the data they need.",
     )
     strategies.render_ideas(store)
 
@@ -25,7 +25,7 @@ def render(store=None) -> None:
     if coverage:
         st.dataframe(data_lab._coverage_table(coverage), width="stretch",
                      hide_index=True)
-        st.caption("Ready means enough fresh daily bars for a signal.")
+        st.caption("Ready means a year of fresh daily bars, which the live rule needs.")
     else:
         theme.empty("No tickers yet", "Add one below, then sync it from IBKR.")
 

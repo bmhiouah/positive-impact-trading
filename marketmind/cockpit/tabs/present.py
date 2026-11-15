@@ -55,7 +55,7 @@ def render(store=None) -> None:
     elif state.refresh_error:
         st.error(state.refresh_error)
     elif state.algo_running:
-        st.caption("Stopping leaves the take-profit and the stop resting at IBKR.")
+        st.caption("Stopping leaves the stop resting at IBKR.")
     elif state.snapshot_at:
         st.caption(f"Last account read {state.snapshot_at[:19].replace('T', ' ')} UTC.")
     else:
@@ -124,7 +124,7 @@ def render(store=None) -> None:
         if resting:
             st.dataframe(pd.DataFrame(resting), width="stretch", hide_index=True)
         else:
-            theme.empty("No resting order", "A bracket shows up here once it is sent.")
+            theme.empty("No resting order", "A stop shows up here once a buy is sent.")
     else:
         recent = journal.trades(limit=12)
         _orders_table(recent, currency)

@@ -7,8 +7,8 @@ Three small tables hold everything the cockpit needs:
 ``paper_daily``     one row per UTC day: net liquidation, cash, equity invested
                     and P&L against the original money. Re-running the tool on
                     the same day updates that row instead of piling up noise.
-``paper_orders``    one row per bracket actually sent. ``outcome`` stays ``open``
-                    until the take-profit or the stop fill is read back.
+``paper_orders``    one row per entry actually sent. ``outcome`` stays ``open``
+                    until the stop fill, or the momentum exit, is read back.
 
 Capital is never a parameter here. Every number comes from IBKR.
 """
@@ -207,6 +207,7 @@ class PaperJournal:
                 "exit_price": "REAL",
                 "result_pnl": "REAL",
                 "closed_at_utc": "TEXT",
+                "exit_order_id": "INTEGER",
             },
         }
         for table, columns in additions.items():
@@ -450,7 +451,7 @@ class PaperJournal:
         entry_price: Optional[float],
         reference_price: float,
         take_profit_order_id: Optional[int],
-        take_profit_price: float,
+        take_profit_price: Optional[float],
         stop_loss_order_id: Optional[int],
         stop_loss_price: float,
         status: str,
@@ -497,6 +498,67 @@ class PaperJournal:
             not in {"blocked", "error", "failed", "rejected"}
         ]
 
+    def open_trades(self) -> List[Dict[str, Any]]:
+        """Entries that were sent and have not closed."""
+        rows = self.conn.execute(
+            """SELECT id, timestamp_utc, symbol, quantity, entry_price,
+                      reference_price, stop_loss_order_id, stop_loss_price,
+                      exit_order_id
+               FROM paper_orders
+               WHERE lower(COALESCE(outcome, 'open')) = 'open'
+                 AND lower(status) NOT IN
+                     ('blocked', 'error', 'failed', 'rejected')
+               ORDER BY id ASC"""
+        ).fetchall()
+        keys = ("id", "timestamp_utc", "symbol", "quantity", "entry_price",
+                "reference_price", "stop_loss_order_id", "stop_loss_price",
+                "exit_order_id")
+        return [dict(zip(keys, row)) for row in rows]
+
+    def set_stop(self, symbol: str, stop_price: float) -> None:
+        """Record a trailed stop on the open entry for this symbol."""
+        with self._lock:
+            self.conn.execute(
+                """UPDATE paper_orders
+                      SET stop_loss_price = ?
+                    WHERE symbol = ?
+                      AND lower(COALESCE(outcome, 'open')) = 'open'
+                      AND lower(status) NOT IN
+                          ('blocked', 'error', 'failed', 'rejected')""",
+                (float(stop_price), symbol),
+            )
+            self.conn.commit()
+
+    def attach_exit_order(self, symbol: str, exit_order_id: int) -> None:
+        """Remember the market sell that closes an open entry, until it fills."""
+        with self._lock:
+            self.conn.execute(
+                """UPDATE paper_orders
+                      SET exit_order_id = ?
+                    WHERE symbol = ?
+                      AND lower(COALESCE(outcome, 'open')) = 'open'
+                      AND lower(status) NOT IN
+                          ('blocked', 'error', 'failed', 'rejected')""",
+                (int(exit_order_id), symbol),
+            )
+            self.conn.commit()
+
+    def last_closed(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """The most recent finished entry for this symbol, if any."""
+        row = self.conn.execute(
+            """SELECT outcome, closed_at_utc
+               FROM paper_orders
+               WHERE symbol = ?
+                 AND lower(COALESCE(outcome, 'open')) != 'open'
+                 AND lower(status) NOT IN
+                     ('blocked', 'error', 'failed', 'rejected')
+               ORDER BY id DESC LIMIT 1""",
+            (symbol,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"outcome": row[0], "closed_at_utc": row[1]}
+
     def oldest_open_at(self) -> Optional[str]:
         """UTC timestamp of the oldest bracket that has not closed yet."""
         row = self.conn.execute(
@@ -525,7 +587,7 @@ class PaperJournal:
 
         rows = self.conn.execute(
             """SELECT id, quantity, entry_order_id, entry_price, reference_price,
-                      take_profit_order_id, stop_loss_order_id
+                      take_profit_order_id, stop_loss_order_id, exit_order_id
                FROM paper_orders
                WHERE lower(COALESCE(outcome, 'open')) = 'open'
                  AND lower(status) NOT IN
@@ -535,7 +597,7 @@ class PaperJournal:
         now = _utcnow()
         with self._lock:
             for (row_id, quantity, entry_id, entry_price, reference,
-                 take_profit_id, stop_id) in rows:
+                 take_profit_id, stop_id, exit_id) in rows:
                 if entry_id is not None and int(entry_id) in by_order:
                     seen = by_order[int(entry_id)].get("price")
                     if seen and not entry_price:
@@ -552,6 +614,9 @@ class PaperJournal:
                 elif stop_id is not None and int(stop_id) in by_order:
                     outcome = "stop_loss"
                     exit_price = by_order[int(stop_id)].get("price")
+                elif exit_id is not None and int(exit_id) in by_order:
+                    outcome = "momentum"
+                    exit_price = by_order[int(exit_id)].get("price")
                 if outcome is None or exit_price is None:
                     continue
                 exit_price = float(exit_price)
