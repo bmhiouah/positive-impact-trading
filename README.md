@@ -14,8 +14,9 @@ you really have* instead of pretending.
 
 Technical details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Product
 decisions and operator constraints (pipeline priority, file-driven target,
-France / IBKR context): [`docs/DECISIONS.md`](docs/DECISIONS.md). The original
-AI-research-platform vision is kept (for context only) in
+France / IBKR context, eligibility filters, cockpit UX):
+[`docs/DECISIONS.md`](docs/DECISIONS.md). The original AI-research-platform
+vision is kept (for context only) in
 [`docs/archive/`](docs/archive/README.md).
 
 ## What it does

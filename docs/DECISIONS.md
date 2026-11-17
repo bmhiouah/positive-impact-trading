@@ -49,6 +49,57 @@ Therefore, when backtests and strategy logic are extended later:
 
 This file records the constraint; it does not encode fee tables or tax rules.
 
+## North star: tidy work that makes money with positive impact
+
+**Decision:** keep the lab tidy and organized. When choosing between paths,
+optimize for the end goal: **make money in a positive way**, with trading that
+has a **positive impact**. Clean structure and clarity serve that goal; busywork
+and sprawl do not.
+
+**Current state (honest):** the paper lab is deliberately small and long-only,
+with an Impact compliance gate, but this north star is a **product constraint
+for future choices**, not a claim that every module already maximizes impact
+P&L. Prefer organization that advances the ticker → signal → backtest → paper
+pipeline and the impact screen over parallel features that do not.
+
+## Eligibility filters: which stocks may be bought
+
+**Decision:** impose the **right filters** so the platform can decide which
+stocks are eligible to buy and which are not. Eligibility is a first-class
+product rule, not an afterthought at order time.
+
+**Current state (honest):** a compliance gate already exists
+(`ImpactExecutionEngine`, sector / debt rules, impact ETF whitelist) and can
+block equity BUYs. It is **not** yet the complete, trusted eligibility layer
+this decision calls for — known gaps include sector-label matching vs IB/UI
+strings, incomplete fundamentals on the paper path, and impact still competing
+as a signal rather than only as a hard pre-filter. Treat “right filters,
+decided clearly” as the target; harden and centralize eligibility in later
+work rather than inventing new screens in this doc.
+
+## Human usability: trading cockpit UX
+
+**Decision:** the platform must be **humanly usable**, like a plane cockpit for
+trading — best possible UX for the operator, not a developer-only console.
+
+Required shape:
+
+* **One click to run** the algo (or as close as Gateway prerequisites allow)
+* **Clear background status** that it is running (and when it is not)
+* A **direct view** of stocks, portfolio, and open positions
+* A **signal indicator** when the algorithm emits a buy
+* **Cockpit-style ergonomics**: scan-first layout, obvious controls, no hunting
+  for the live state
+
+**Current state (honest):** a Streamlit cockpit already provides Start/Stop
+Algo, an “Algo running / stopped” status, Trading / Strategies / Journal pages,
+coverage of the universe, and open positions / orders while the session is up.
+That is a **partial** match. Gaps relative to this decision include: richer
+always-visible running status, a clearer dedicated buy-signal indicator, and
+cockpit ergonomics that fully match “plane cockpit for trading” rather than a
+capable but still improvable lab UI. Do not pretend the UX bar is already met;
+raise the cockpit toward this bar without breaking the pipeline priority.
+
 ## Grounding rule
 
 Every product or strategy decision must be grounded in **Badre's stated
