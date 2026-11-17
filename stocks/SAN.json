@@ -1,0 +1,17 @@
+{
+  "ticker": "SAN",
+  "enabled": true,
+  "currency": "EUR",
+  "exchange": "SMART",
+  "signal": {
+    "entry": "m12"
+  },
+  "exits": {
+    "atr_period": 20,
+    "atr_multiple": 2.0,
+    "target_r": null,
+    "fixed_take_profit_pct": null,
+    "fixed_stop_pct": null
+  },
+  "notes": "Sanofi (Euronext Paris). Must use EUR \u2014 USD SMART resolves to Banco Santander."
+}

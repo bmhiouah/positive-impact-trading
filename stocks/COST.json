@@ -1,0 +1,17 @@
+{
+  "ticker": "COST",
+  "enabled": true,
+  "currency": "USD",
+  "exchange": "SMART",
+  "signal": {
+    "entry": "m12"
+  },
+  "exits": {
+    "atr_period": 20,
+    "atr_multiple": 2.0,
+    "target_r": null,
+    "fixed_take_profit_pct": null,
+    "fixed_stop_pct": null
+  },
+  "notes": "Costco \u2014 US retail; liquid staples proxy"
+}
