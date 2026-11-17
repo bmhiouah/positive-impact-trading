@@ -119,6 +119,30 @@ def test_contest_keeps_the_incumbent_until_there_are_two_years_of_bars(tmp_path)
     store.close()
 
 
+def test_allow_entry_state_requires_rising_edge(monkeypatch) -> None:
+    """Sticky m12 must not re-fire every day while the regime stays on."""
+    from marketmind import contest
+
+    book = {
+        "high": np.zeros(5), "low": np.zeros(5),
+        "close": np.zeros(5), "volume": np.zeros(5),
+    }
+    # False, False, True, True, False — only index 2 is a rising edge.
+    values = {0: False, 1: False, 2: True, 3: True, 4: False}
+
+    def fake(high, low, close, volume, index, entry):
+        return values.get(index)
+
+    monkeypatch.setattr(contest, "signal_at", fake)
+    rule = Rule("m12", 2.0)
+    assert contest.allow_entry(book, rule, 2, None, None) is True
+    assert contest.allow_entry(book, rule, 3, None, None) is False
+    assert contest.allow_entry(book, rule, 1, None, None) is False
+    # Event entries stay level-triggered.
+    breakout = Rule("breakout", 2.0)
+    assert contest.allow_entry(book, breakout, 3, None, None) is True
+
+
 def test_saved_contest_is_not_recomputed_when_the_bars_have_not_changed(tmp_path) -> None:
     store = DataStore(tmp_path / "lab.db")
     start = datetime(2020, 1, 1)

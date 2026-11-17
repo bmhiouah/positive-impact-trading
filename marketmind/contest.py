@@ -677,10 +677,22 @@ def read_symbol(
 
 def allow_entry(book: dict, rule: Rule, now_index: int,
                 last_outcome: Optional[str], exit_index: Optional[int]) -> bool:
-    """A stop-out on a trend waits until that trend has turned off."""
+    """Whether a live BUY may fire on this completed bar.
+
+    Sticky state entries (``m12`` / ``m6`` / ``m3`` / ``trend``) stay true for
+    many sessions. Without a rising-edge check the live runner would re-count
+    a BUY every day while flat. Require yesterday off (or unknown) and today
+    on. After a stop-loss on those entries, also wait until the condition has
+    turned off at least once since the exit. Breakout and dip stay
+    level-triggered — they are short-lived events.
+    """
     verdict = signal_at(*_book_arrays(book), now_index, rule.entry)
     if not verdict:
         return False
+    if rule.entry in STATE_ENTRIES and now_index > 0:
+        prior = signal_at(*_book_arrays(book), now_index - 1, rule.entry)
+        if prior is True:
+            return False
     if last_outcome != "stop_loss" or rule.entry not in STATE_ENTRIES:
         return True
     if exit_index is None:

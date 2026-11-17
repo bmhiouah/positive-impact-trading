@@ -557,7 +557,6 @@ class LiveTradingRunner:
             )
             if reading is None or not reading.buy:
                 continue
-            signals += 1
             if symbol in active:
                 skipped += 1
                 continue
@@ -569,11 +568,15 @@ class LiveTradingRunner:
                 closed_day = momentum.as_date(prior["closed_at_utc"])
                 if closed_day is not None:
                     exit_index = momentum.index_of_day(book["dates"], closed_day)
+            # Rising-edge / stop cooldown live here — count a signal only when
+            # the runner would actually attempt an entry (not every day m12
+            # stays true while flat).
             if not contest.allow_entry(
                 book, rule, reading.index, outcome, exit_index,
             ):
                 skipped += 1
                 continue
+            signals += 1
             quantity = momentum.share_quantity(
                 self._portfolio_value, reading.price, reading.stop,
                 cash=float(snap.total_cash_value or 0.0),
