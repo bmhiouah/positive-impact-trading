@@ -23,15 +23,13 @@ a step above.
 (ticker, parameters, signal rules). The lab picks those files up from a folder
 — adding or changing a name is editing a file, not changing runner code.
 
-**Current state (honest):** this design is **aspirational**, not implemented.
+**Current state (honest):** scaffolded, not yet the live runner source of truth.
 
-Today the live universe is the SQLite `instruments` table (add a ticker in the
-cockpit UI; `DEFAULT_UNIVERSE` in `config.py` is only a seed). Signal rules live
-in a **shared** catalogue (`strategy_catalog.py` and related modules), not in
-per-stock files. There is no folder of per-ticker config that the runner loads.
-
-Treat the file-per-stock model as the intended product shape for future work,
-not as something the code already does.
+A `stocks/` folder holds one JSON file per ticker (signal entry + per-stock
+ATR / optional fixed TP-SL). `marketmind.stock_specs` loads that folder. The
+live universe is still the SQLite `instruments` table (cockpit add; 
+`DEFAULT_UNIVERSE` is only a seed), and the paper runner still uses the shared
+contest / catalogue rules. Wire the runner to stock files in a later step.
 
 ## Operator context: France + US stocks via IBKR
 
@@ -70,12 +68,11 @@ product rule, not an afterthought at order time.
 
 **Current state (honest):** a compliance gate already exists
 (`ImpactExecutionEngine`, sector / debt rules, impact ETF whitelist) and can
-block equity BUYs. It is **not** yet the complete, trusted eligibility layer
-this decision calls for — known gaps include sector-label matching vs IB/UI
-strings, incomplete fundamentals on the paper path, and impact still competing
-as a signal rather than only as a hard pre-filter. Treat “right filters,
-decided clearly” as the target; harden and centralize eligibility in later
-work rather than inventing new screens in this doc.
+block equity BUYs. Excluded sectors, debt cap, and whitelists now load from
+the shared file `ethics/exclusions.json`, with alias-aware sector matching for
+IB/UI labels. Remaining gaps: incomplete fundamentals on the paper path, and
+impact still competing as a signal rather than only as a hard pre-filter.
+Continue hardening eligibility rather than inventing new screens in this doc.
 
 ## Human usability: trading cockpit UX
 

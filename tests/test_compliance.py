@@ -91,6 +91,10 @@ class TestWhitelistPredicates:
         assert is_excluded_sector("technology") is False
         assert is_excluded_sector(None) is False
         assert is_excluded_sector("  Financial_Services  ") is True
+        # IB / UI style labels (aliases in ethics/exclusions.json)
+        assert is_excluded_sector("Financial Services") is True
+        assert is_excluded_sector("Financials") is True
+        assert is_excluded_sector("Banks") is True
 
     def test_debt_ratio_compliant(self):
         assert is_debt_ratio_compliant(0.10) is True

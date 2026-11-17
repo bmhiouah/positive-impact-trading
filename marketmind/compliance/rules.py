@@ -1,8 +1,8 @@
 """Core impact-trading rule definitions and data models.
 
-This module hardcodes the project's financial boundaries into typed constants
-and data structures. These are the single source of truth for what the
-execution engine may and may not do.
+Eligibility lists (excluded sectors, debt cap, ETF/metal whitelists) are
+loaded from the shared file ``ethics/exclusions.json``. This module exposes
+typed constants and predicates used by the execution engine.
 """
 
 from __future__ import annotations
@@ -12,51 +12,25 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Final, List, Optional
 
+from marketmind.ethics.filter import default_ethics_filter
 
 # ---------------------------------------------------------------------------
-# Whitelisted asset classes (the only products the system may touch)
+# Shared ethics filter (file-driven source of truth)
 # ---------------------------------------------------------------------------
+
+_ETHICS = default_ethics_filter()
 
 # Impact-screened ETFs / Mutual Funds tracking positive-impact indices.
-WHITELISTED_ETFS: Final[frozenset[str]] = frozenset(
-    {
-        "SPUS",  # Impact-screened US large-cap ETF
-        "HLAL",  # Impact-focused ETF
-        "UMMA",  # Umma Fund ETF
-        "ISUS",  # Sustainability-focused ETF
-    }
-)
+WHITELISTED_ETFS: Final[frozenset[str]] = _ETHICS.whitelisted_etfs
 
 # Physical spot metals — 100% cash-backed, immediate ownership transfer (T+0).
-WHITELISTED_METALS: Final[frozenset[str]] = frozenset(
-    {
-        "XAUUSD",  # Spot Gold vs USD
-        "XAGUSD",  # Spot Silver vs USD
-        "GOLD",    # Physical gold
-        "SILVER",  # Physical silver
-    }
-)
+WHITELISTED_METALS: Final[frozenset[str]] = _ETHICS.whitelisted_metals
 
-# ---------------------------------------------------------------------------
-# Strictly prohibited sectors (business-sector screen)
-# ---------------------------------------------------------------------------
+# Canonical excluded sector ids (aliases live in ethics/exclusions.json).
+EXCLUDED_SECTORS: Final[frozenset[str]] = _ETHICS.excluded_sector_ids
 
-EXCLUDED_SECTORS: Final[frozenset[str]] = frozenset(
-    {
-        "financial_services",   # conventional banking/insurance (interest-based / speculative)
-        "alcohol",
-        "gambling",
-        "adult_entertainment",
-        "tobacco",
-        "weapons",
-    }
-)
-
-# ---------------------------------------------------------------------------
-# Financial ratio thresholds
-# ---------------------------------------------------------------------------
-
-MAX_DEBT_TO_MARKET_CAP: Final[float] = 0.33  # 33% — total debt / market cap
+# Financial ratio threshold — total debt / market cap.
+MAX_DEBT_TO_MARKET_CAP: Final[float] = _ETHICS.max_debt_to_market_cap
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -168,23 +142,24 @@ class ComplianceVerdict:
 
 def is_whitelisted_etf(symbol: str) -> bool:
     """Return True if *symbol* is a known impact-screened ETF / mutual fund."""
-    return symbol.upper() in WHITELISTED_ETFS
+    return default_ethics_filter().is_whitelisted_etf(symbol)
 
 
 def is_whitelisted_metal(symbol: str) -> bool:
     """Return True if *symbol* is a physical spot metal (gold/silver, T+0)."""
-    return symbol.upper() in WHITELISTED_METALS
+    return default_ethics_filter().is_whitelisted_metal(symbol)
 
 
 def is_excluded_sector(sector: Optional[str]) -> bool:
-    """Return True if *sector* is on the excluded (prohibited) business list."""
-    if sector is None:
-        return False
-    return sector.lower().strip() in EXCLUDED_SECTORS
+    """Return True if *sector* matches an excluded id or IB/UI alias.
+
+    Matching is normalized (case, spaces, punctuation), so labels like
+    ``Financial Services``, ``financials``, and ``financial_services`` all
+    resolve against ``ethics/exclusions.json``.
+    """
+    return default_ethics_filter().is_excluded_sector(sector)
 
 
 def is_debt_ratio_compliant(debt_to_market_cap: Optional[float]) -> bool:
-    """Return True if the debt-to-market-cap ratio is under 33%."""
-    if debt_to_market_cap is None:
-        return False
-    return debt_to_market_cap < MAX_DEBT_TO_MARKET_CAP
+    """Return True if the debt-to-market-cap ratio is under the ethics cap."""
+    return default_ethics_filter().is_debt_ratio_compliant(debt_to_market_cap)
