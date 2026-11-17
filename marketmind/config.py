@@ -50,5 +50,6 @@ ETHICS_FILTER_PATH = "ethics/exclusions.json"
 HISTORY_DURATION = "5 Y"  # 12-1 momentum needs a year, and a check needs more
 HISTORY_BAR_SIZE = "1 day"
 MIN_BARS_FOR_SIGNALS = MOMENTUM_FORMATION + 1
+BACKTEST_SESSIONS = 126   # ~6 months of daily bars for fee-aware study path
 DATA_STALE_HOURS = 36      # coverage older than this is "partial", not "ready"
 DATA_SYNC_COOLDOWN = 3600  # seconds between automatic refreshes by the runner
