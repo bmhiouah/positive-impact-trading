@@ -38,9 +38,15 @@ MAX_POSITION_FRACTION = 0.20   # notional cap, so a tiny stop cannot buy the boo
 # extended from the cockpit's Data page, so no code change is needed to add a
 # stock. Everything downstream (ingestion, coverage, strategies, the runner)
 # reads the universe from that one table.
+#
+# File-driven pipeline (aspirational → scaffolded): per-ticker JSON under
+# STOCKS_DIR and the shared ethics filter at ETHICS_FILTER_PATH. The paper
+# runner still uses `instruments` today; specs feed backtests / eligibility.
 DEFAULT_UNIVERSE = (
     "AAPL", "MSFT", "NVDA", "TSLA", "JPM", "SPUS", "HLAL",
 )
+STOCKS_DIR = "stocks"
+ETHICS_FILTER_PATH = "ethics/exclusions.json"
 HISTORY_DURATION = "5 Y"  # 12-1 momentum needs a year, and a check needs more
 HISTORY_BAR_SIZE = "1 day"
 MIN_BARS_FOR_SIGNALS = MOMENTUM_FORMATION + 1

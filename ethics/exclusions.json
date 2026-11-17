@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "description": "Shared positive-impact eligibility filter. Canonical ids plus IB/UI aliases. Edit this file to change what equities may be bought.",
+  "max_debt_to_market_cap": 0.33,
+  "excluded_sectors": [
+    {
+      "id": "financial_services",
+      "aliases": [
+        "financial_services",
+        "financial services",
+        "financials",
+        "banks",
+        "banking",
+        "insurance",
+        "diversified financials",
+        "capital markets",
+        "consumer finance"
+      ]
+    },
+    {
+      "id": "alcohol",
+      "aliases": [
+        "alcohol",
+        "alcoholic beverages",
+        "beverages - alcoholic",
+        "brewers",
+        "distillers and vintners"
+      ]
+    },
+    {
+      "id": "gambling",
+      "aliases": [
+        "gambling",
+        "casinos",
+        "casino",
+        "gaming",
+        "casinos and gaming"
+      ]
+    },
+    {
+      "id": "adult_entertainment",
+      "aliases": [
+        "adult_entertainment",
+        "adult entertainment",
+        "adult"
+      ]
+    },
+    {
+      "id": "tobacco",
+      "aliases": [
+        "tobacco",
+        "tobacco products"
+      ]
+    },
+    {
+      "id": "weapons",
+      "aliases": [
+        "weapons",
+        "defense",
+        "defence",
+        "aerospace and defense",
+        "aerospace & defense",
+        "arms"
+      ]
+    }
+  ],
+  "whitelisted_etfs": ["SPUS", "HLAL", "UMMA", "ISUS"],
+  "whitelisted_metals": ["XAUUSD", "XAGUSD", "GOLD", "SILVER"]
+}

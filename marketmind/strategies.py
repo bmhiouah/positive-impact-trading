@@ -113,25 +113,22 @@ class DebtRatioStrategy(BaseStrategy):
 # ---------------------------------------------------------------------------
 
 class SectorExclusionStrategy(BaseStrategy):
-    """Strategy avoids excluded sectors per impact principles."""
+    """Strategy avoids excluded sectors per impact principles.
 
-    EXCLUDED_SECTORS = {
-        "financial_services",
-        "alcohol",
-        "gambling",
-        "adult_entertainment",
-        "tobacco",
-        "weapons",
-    }
+    Uses the shared ethics filter (``ethics/exclusions.json``) via
+    ``is_excluded_sector``, including IB/UI sector aliases.
+    """
 
     def generate_signals(self, symbols: List[str]) -> List[StrategySignal]:
+        from marketmind.compliance.rules import is_excluded_sector
+
         signals: List[StrategySignal] = []
         for symbol in symbols:
             fundamentals = self._store.get_fundamental_data(symbol)
             if fundamentals is None:
                 continue
             sector = fundamentals.sector or ""
-            if sector.lower().strip() in self.EXCLUDED_SECTORS:
+            if is_excluded_sector(sector):
                 continue
             signal = StrategySignal(
                 symbol=symbol, action="HOLD", strength=0.5,
