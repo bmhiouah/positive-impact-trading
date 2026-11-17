@@ -42,7 +42,9 @@ from marketmind.compliance import (
 from marketmind.compliance.rules import WHITELISTED_ETFS, WHITELISTED_METALS
 from marketmind.data import DataStore
 from marketmind.journal import PaperJournal
+from marketmind.live_specs import load_live_specs, rule_and_exits, trading_symbols
 from marketmind.market_data import MarketDataService
+from marketmind.stock_specs.loader import StockSpec
 from marketmind.universe import Universe
 from marketmind import contest, momentum
 
@@ -85,6 +87,8 @@ class LiveTradingRunner:
         self._last_decision_day: Optional[str] = None
         self._last_sync_day: Optional[str] = None
         self._live_rule = contest.INCUMBENT
+        self._specs: List[StockSpec] = []
+        self._specs_by_ticker: Dict[str, StockSpec] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle — connection first, trading second
@@ -112,6 +116,13 @@ class LiveTradingRunner:
         self._portfolio_value = float(snapshot.net_liquidation)
         baseline = self._journal.ensure_baseline(snapshot)
         self._journal.record(snapshot)
+        # File-driven universe + currency-aware IB listings before the first sync.
+        trade_symbols = self._reload_specs()
+        logger.info(
+            "Trading universe from %s: %s",
+            "stocks/" if self._specs else "instruments",
+            ", ".join(trade_symbols) or "(empty)",
+        )
 
         with self._lock:
             self._running = True
@@ -260,6 +271,30 @@ class LiveTradingRunner:
             logger.debug("Could not read open orders: %s", exc)
         return active
 
+    def _reload_specs(self) -> List[str]:
+        """Load ``stocks/``, stamp listings, ensure instruments rows exist.
+
+        Returns the symbols the algo will trade (enabled specs, or the full
+        instruments table when the folder is empty/missing).
+        """
+        specs, by_ticker = load_live_specs()
+        self._specs = list(specs)
+        self._specs_by_ticker = dict(by_ticker)
+        if specs:
+            self._universe.ensure_from_specs(specs)
+        # Instrument meta first, then specs overwrite — EUR names win when filed.
+        self._adapter.listings.clear()
+        self._adapter.listings.load_mappings(self._universe.listing_rows())
+        if specs:
+            self._adapter.listings.load_specs(specs)
+        return trading_symbols(specs, self._universe.symbols())
+
+    def _trade_symbols(self) -> List[str]:
+        """Current trading universe (file-driven when specs exist)."""
+        if self._specs:
+            return [spec.ticker for spec in self._specs]
+        return self._universe.symbols()
+
     def _maybe_sync_data(self, force: bool = False) -> None:
         """Refresh the universe through the ALREADY OPEN session.
 
@@ -269,12 +304,18 @@ class LiveTradingRunner:
         first pass of a new session ignores that cooldown so the decision sees
         the latest completed bar.
         """
+        symbols = self._reload_specs()
         now = time.monotonic()
         coverage = self._market.coverage()
-        short = any(int(row.get("bars") or 0) < config.MIN_BARS_FOR_SIGNALS
-                    for row in coverage)
-        fresh = bool(coverage) and not short and all(
-            row["status"] == "ready" for row in coverage
+        short = any(
+            int(row.get("bars") or 0) < config.MIN_BARS_FOR_SIGNALS
+            for row in coverage
+            if not symbols or row.get("symbol") in symbols
+        )
+        relevant = [row for row in coverage
+                    if not symbols or row.get("symbol") in symbols]
+        fresh = bool(relevant) and not short and all(
+            row["status"] == "ready" for row in relevant
         )
         if fresh and not force:
             self._last_data_sync = now
@@ -282,8 +323,8 @@ class LiveTradingRunner:
         if not force and now - self._last_data_sync < config.DATA_SYNC_COOLDOWN:
             return
         logger.info("Refreshing IBKR market data for %s instruments",
-                    len(coverage))
-        self._market.sync(self._adapter)
+                    len(symbols))
+        self._market.sync(self._adapter, symbols=symbols or None)
         self._last_data_sync = now
 
     def _settle_open_brackets(self) -> None:
@@ -443,9 +484,14 @@ class LiveTradingRunner:
             if book is None:
                 continue
             entry_day = momentum.as_date(row["timestamp_utc"]) or session
+            rule, fixed_sl, fixed_tp = rule_and_exits(
+                symbol, self._specs_by_ticker, self._live_rule,
+            )
             action = contest.manage(
-                book, self._live_rule, entry_day,
+                book, rule, entry_day,
                 float(row["stop_loss_price"] or 0.0), session,
+                fixed_stop_pct=fixed_sl,
+                fixed_take_profit_pct=fixed_tp,
             )
             if action.kind == "exit":
                 if self._flatten(symbol, float(row["quantity"]),
@@ -478,16 +524,21 @@ class LiveTradingRunner:
 
     def _decide(self, snap, session: date) -> Dict[str, Any]:
         """One pass on the last completed session: exits first, then new buys."""
-        symbols = self._universe.symbols()
+        symbols = self._reload_specs()
         coverage = self._market.coverage()
-        ready = any(int(row.get("bars") or 0) >= config.MIN_BARS_FOR_SIGNALS
-                    for row in coverage)
+        ready = any(
+            int(row.get("bars") or 0) >= config.MIN_BARS_FOR_SIGNALS
+            for row in coverage
+            if row.get("symbol") in symbols
+        )
         if not ready:
             return {"signals": 0, "entries": 0, "approved": 0, "submitted": 0,
                     "blocked": 0, "skipped": 0, "raised": 0, "exited": 0,
                     "universe": len(symbols), "strategies_ready": 0,
                     "decided": False, "waiting": "history"}
 
+        # Contest still picks a default holder; per-stock files override exits
+        # and entry family when present (see rule_and_exits).
         self._refresh_rule(symbols)
         managed = self._manage_open(session)
         active = self._active_symbols()
@@ -496,7 +547,14 @@ class LiveTradingRunner:
             book = contest.load_book(self._store, symbol)
             if book is None:
                 continue
-            reading = contest.read_symbol(book, self._live_rule, session)
+            rule, fixed_sl, fixed_tp = rule_and_exits(
+                symbol, self._specs_by_ticker, self._live_rule,
+            )
+            reading = contest.read_symbol(
+                book, rule, session,
+                fixed_stop_pct=fixed_sl,
+                fixed_take_profit_pct=fixed_tp,
+            )
             if reading is None or not reading.buy:
                 continue
             signals += 1
@@ -512,7 +570,7 @@ class LiveTradingRunner:
                 if closed_day is not None:
                     exit_index = momentum.index_of_day(book["dates"], closed_day)
             if not contest.allow_entry(
-                book, self._live_rule, reading.index, outcome, exit_index,
+                book, rule, reading.index, outcome, exit_index,
             ):
                 skipped += 1
                 continue
@@ -575,7 +633,7 @@ class LiveTradingRunner:
             logger.warning("Automatic data sync failed: %s", exc)
 
         if self._last_decision_day == session.isoformat():
-            symbols = self._universe.symbols()
+            symbols = self._trade_symbols()
             return {"signals": 0, "entries": 0, "approved": 0, "submitted": 0,
                     "blocked": 0, "skipped": 0, "raised": 0, "exited": 0,
                     "universe": len(symbols), "strategies_ready": 1,

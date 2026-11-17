@@ -619,8 +619,29 @@ def _book_arrays(book: dict):
     return (book["high"], book["low"], book["close"], book["volume"])
 
 
-def read_symbol(book: dict, rule: Rule, session: date) -> Optional[LiveRead]:
-    """The last completed session, read with ``rule``."""
+def rule_from_spec(spec) -> Rule:
+    """Build a contest ``Rule`` from a file-driven ``StockSpec``."""
+    return Rule(
+        entry=str(spec.entry),
+        atr_multiple=float(spec.atr_multiple),
+        target_r=None if spec.target_r is None else float(spec.target_r),
+        max_hold=None if spec.max_hold is None else int(spec.max_hold),
+    )
+
+
+def read_symbol(
+    book: dict,
+    rule: Rule,
+    session: date,
+    *,
+    fixed_stop_pct: Optional[float] = None,
+    fixed_take_profit_pct: Optional[float] = None,
+) -> Optional[LiveRead]:
+    """The last completed session, read with ``rule``.
+
+    Optional fixed percentage exits (from a stock file) override the ATR stop
+    and/or R-multiple target when set.
+    """
     close = book["close"]
     index = momentum.completed_index(book["dates"], session)
     if index < 0:
@@ -631,11 +652,19 @@ def read_symbol(book: dict, rule: Rule, session: date) -> Optional[LiveRead]:
         return None
     price = float(close[index])
     distance = rule.atr_multiple * atr_value
-    stop = round(price - distance, 2)
+    if fixed_stop_pct is not None and fixed_stop_pct > 0:
+        stop = round(price * (1.0 - fixed_stop_pct), 2)
+    else:
+        stop = round(price - distance, 2)
     if stop <= 0 or stop >= price:
         return None
-    target = (round(price + rule.target_r * distance, 2)
-              if rule.target_r is not None else None)
+    if fixed_take_profit_pct is not None and fixed_take_profit_pct > 0:
+        target = round(price * (1.0 + fixed_take_profit_pct), 2)
+    elif rule.target_r is not None:
+        risk = price - stop
+        target = round(price + rule.target_r * risk, 2) if risk > 0 else None
+    else:
+        target = None
     day = momentum.as_date(book["dates"][index])
     if day is None:
         return None
@@ -663,8 +692,16 @@ def allow_entry(book: dict, rule: Rule, now_index: int,
     return False
 
 
-def manage(book: dict, rule: Rule, entry_day: date, previous_stop: float,
-           session: date) -> momentum.HoldAction:
+def manage(
+    book: dict,
+    rule: Rule,
+    entry_day: date,
+    previous_stop: float,
+    session: date,
+    *,
+    fixed_stop_pct: Optional[float] = None,
+    fixed_take_profit_pct: Optional[float] = None,
+) -> momentum.HoldAction:
     """Trail, or leave, using the live rule and the last completed session."""
     floor = float(previous_stop) if previous_stop and previous_stop > 0 else 0.0
     parked = momentum.HoldAction(kind="hold", reason="", stop=round(floor, 2))
@@ -689,9 +726,17 @@ def manage(book: dict, rule: Rule, entry_day: date, previous_stop: float,
     if atr_value is None or atr_value <= 0:
         return parked
     price = float(close[index])
-    if rule.target_r is None:
+    # Fixed take-profit rules (and R-targets) keep the stop put; only trail when
+    # neither a fixed TP pct nor a target_r is set.
+    trail = rule.target_r is None and not (
+        fixed_take_profit_pct is not None and fixed_take_profit_pct > 0
+    )
+    if trail:
         peak = float(np.max(close[start:index + 1]))
-        trailed = round(peak - rule.atr_multiple * atr_value, 2)
+        if fixed_stop_pct is not None and fixed_stop_pct > 0:
+            trailed = round(peak * (1.0 - fixed_stop_pct), 2)
+        else:
+            trailed = round(peak - rule.atr_multiple * atr_value, 2)
         new_stop = round(max(floor, trailed), 2) if trailed > 0 else round(floor, 2)
         if price <= new_stop:
             return momentum.HoldAction(kind="exit", reason="stop", stop=new_stop)

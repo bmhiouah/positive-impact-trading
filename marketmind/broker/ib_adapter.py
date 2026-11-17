@@ -40,10 +40,10 @@ from ib_insync import (
     LimitOrder,
     MarketOrder,
     Order as IBOrder,
-    Stock,
     StopOrder,
 )
 
+from marketmind.broker.contracts import Listing, ListingBook, make_stock
 from marketmind.compliance.engine import ExecutionDecision, ImpactExecutionEngine
 from marketmind.data.models import AccountSnapshot
 
@@ -259,11 +259,15 @@ class IBKRAdapter:
         engine: Optional[ImpactExecutionEngine] = None,
         connect_timeout: float = 8.0,
         op_timeout: float = 15.0,
+        listings: Optional[ListingBook] = None,
     ) -> None:
         self._engine = engine or ImpactExecutionEngine(auto_submit=False)
         self._account: Optional[str] = None   # discovered from managedAccounts()
         self._connect_timeout = float(connect_timeout)
         self._op_timeout = float(op_timeout)
+        # Per-symbol currency/exchange (stock specs / instrument meta). Default
+        # USD/SMART remains for names with no listing — that is the US seed path.
+        self._listings = listings if listings is not None else ListingBook()
 
         self._ib: Optional[IB] = None            # owned by the loop thread only
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -273,6 +277,22 @@ class IBKRAdapter:
         self._connected = False
         self._connection_info: Optional[ConnectionInfo] = None
         self._last_error: Optional[str] = None
+
+    @property
+    def listings(self) -> ListingBook:
+        """Mutable book of currency/exchange per ticker for Stock contracts."""
+        return self._listings
+
+    def listing_for(self, symbol: str) -> Listing:
+        """Resolved listing for *symbol* (USD/SMART when unknown)."""
+        return self._listings.resolve(symbol)
+
+    def _stock(self, symbol: str):
+        """Currency-aware IBKR Stock contract for *symbol*."""
+        listing = self.listing_for(symbol)
+        return make_stock(
+            listing.symbol, currency=listing.currency, exchange=listing.exchange,
+        )
 
     # ------------------------------------------------------------------
     # Properties (safe to read from any thread)
@@ -591,7 +611,7 @@ class IBKRAdapter:
                                bar_size: str) -> List[Dict[str, Any]]:
         """Daily OHLCV bars, executed on the IB event loop."""
         ib = self._require_ib()
-        contract = Stock(symbol, "SMART", "USD")
+        contract = self._stock(symbol)
         await ib.qualifyContractsAsync(contract)
         if not contract.conId:
             return []
@@ -655,7 +675,7 @@ class IBKRAdapter:
 
     async def _quote_on_loop(self, symbol: str) -> Dict[str, Any]:
         ib = self._require_ib()
-        contract = Stock(symbol, "SMART", "USD")
+        contract = self._stock(symbol)
         await ib.qualifyContractsAsync(contract)
         ticker = await self._snapshot_ticker(ib, contract)
         return {
@@ -679,7 +699,7 @@ class IBKRAdapter:
 
     async def _contract_info_on_loop(self, symbol: str) -> Dict[str, Any]:
         ib = self._require_ib()
-        contract = Stock(symbol, "SMART", "USD")
+        contract = self._stock(symbol)
         details = await ib.reqContractDetailsAsync(contract)
         if not details:
             return {}
@@ -816,7 +836,7 @@ class IBKRAdapter:
 
     async def _place_order_on_loop(self, order_intent) -> Dict[str, Any]:
         ib = self._require_ib()
-        contract = Stock(order_intent.symbol, "SMART", "USD")
+        contract = self._stock(order_intent.symbol)
         await ib.qualifyContractsAsync(contract)
         if not contract.conId:
             raise RuntimeError(f"unknown contract {order_intent.symbol}")
@@ -874,7 +894,7 @@ class IBKRAdapter:
     async def _place_close_on_loop(self, order_intent) -> Dict[str, Any]:
         """Market sell of a long already held. The resting stop is cancelled first."""
         ib = self._require_ib()
-        contract = Stock(order_intent.symbol, "SMART", "USD")
+        contract = self._stock(order_intent.symbol)
         await ib.qualifyContractsAsync(contract)
         if not contract.conId:
             raise RuntimeError(f"unknown contract {order_intent.symbol}")

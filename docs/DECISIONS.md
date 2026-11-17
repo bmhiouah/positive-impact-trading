@@ -23,13 +23,16 @@ a step above.
 (ticker, parameters, signal rules). The lab picks those files up from a folder
 — adding or changing a name is editing a file, not changing runner code.
 
-**Current state (honest):** scaffolded, not yet the live runner source of truth.
+**Current state (honest):** live paper runner reads `stocks/` when present.
 
 A `stocks/` folder holds one JSON file per ticker (signal entry + per-stock
-ATR / optional fixed TP-SL). `marketmind.stock_specs` loads that folder. The
-live universe is still the SQLite `instruments` table (cockpit add; 
-`DEFAULT_UNIVERSE` is only a seed), and the paper runner still uses the shared
-contest / catalogue rules. Wire the runner to stock files in a later step.
+ATR / optional fixed TP-SL, currency/exchange). `marketmind.stock_specs`
+loads that folder; `LiveTradingRunner` prefers enabled specs for the trading
+universe and per-name exits, keeps the contest holder as the default when a
+name has no file, and stamps IB `Stock(...)` listings from currency/exchange
+(so European tickers do not resolve as USD names). The `instruments` table
+remains the meta/coverage store and the fallback universe if `stocks/` is
+empty.
 
 ## Operator context: France + US stocks via IBKR
 

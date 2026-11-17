@@ -52,7 +52,9 @@ class IBKRFetcher:
         """Fetch historical OHLCV bars for *symbol*."""
         if _Stock is None:
             raise RuntimeError("ib_insync is not available")
-        contract = _Stock(symbol, "SMART", "USD")
+        from marketmind.broker.contracts import make_stock
+
+        contract = make_stock(symbol)
         await self._ib.qualifyContractsAsync(contract)
 
         bars = await self._ib.reqHistoricalDataAsync(
@@ -94,7 +96,9 @@ class IBKRFetcher:
         """
         if _Stock is None:
             raise RuntimeError("ib_insync is not available")
-        contract = _Stock(symbol, "SMART", "USD")
+        from marketmind.broker.contracts import make_stock
+
+        contract = make_stock(symbol)
         await self._ib.qualifyContractsAsync(contract)
 
         # Request financial summary from IBKR
