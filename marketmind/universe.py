@@ -163,3 +163,37 @@ class Universe:
         return int(self.conn.execute(
             "SELECT COUNT(*) FROM instruments WHERE active = 1"
         ).fetchone()[0])
+
+    def ensure_from_specs(self, specs) -> List[str]:
+        """Add/activate tickers from file-driven stock specs; stamp currency.
+
+        Returns the enabled ticker list. Does not deactivate cockpit-added
+        names that are absent from the folder — the runner chooses which
+        set to trade separately.
+        """
+        enabled: List[str] = []
+        for spec in specs:
+            if not getattr(spec, "enabled", True):
+                continue
+            symbol = self.add(spec.ticker)
+            meta: Dict[str, Any] = {
+                "currency": getattr(spec, "currency", None) or "USD",
+            }
+            exchange = getattr(spec, "exchange", None)
+            if exchange and str(exchange).upper() != "SMART":
+                meta["exchange"] = str(exchange)
+            self.update_meta(symbol, **meta)
+            enabled.append(symbol)
+        return enabled
+
+    def listing_rows(self) -> Dict[str, Dict[str, Any]]:
+        """``{symbol: {currency, exchange}}`` for active instruments."""
+        out: Dict[str, Dict[str, Any]] = {}
+        for row in self.all_rows():
+            if not row.get("active"):
+                continue
+            out[row["symbol"]] = {
+                "currency": row.get("currency") or "USD",
+                "exchange": row.get("exchange") or "SMART",
+            }
+        return out

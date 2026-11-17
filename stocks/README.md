@@ -26,5 +26,10 @@ Minimal shape:
 * `exits.atr_multiple` — stop distance in ATR units (per-stock, ATR-flexible)
 * `exits.target_r` — optional R-multiple take-profit; when set, stop does not trail
 * `exits.fixed_*_pct` — optional fixed percentage targets (e.g. `0.05` = +5%)
+* `currency` / `exchange` — IBKR listing (default `USD` / `SMART`). European
+  names must set `currency` to `EUR` (e.g. AIR); USD SMART can resolve the
+  wrong company.
 
-Eligibility (sector / debt) lives in `ethics/exclusions.json`, not here.
+The live paper runner trades enabled files in this folder and builds IB
+`Stock(...)` contracts from `currency`/`exchange`. Eligibility (sector / debt)
+lives in `ethics/exclusions.json`, not here.

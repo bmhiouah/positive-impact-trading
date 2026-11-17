@@ -44,7 +44,9 @@ asyncio.set_event_loop(LOOP)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from marketmind import config  # noqa: E402  (pure constants, no ib_insync)
 
-from ib_insync import IB, Stock, util  # noqa: E402
+from ib_insync import IB, util  # noqa: E402
+from marketmind.broker.contracts import ListingBook, make_stock  # noqa: E402
+from marketmind.live_specs import load_live_specs  # noqa: E402
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 util.logToConsole(logging.WARNING)
@@ -181,9 +183,21 @@ def _reference_price(ticker) -> float:
     return 0.0
 
 
+def _probe_listings() -> ListingBook:
+    """Load currency/exchange from stocks/ so AIR resolves as EUR Airbus."""
+    book = ListingBook()
+    specs, _ = load_live_specs()
+    if specs:
+        book.load_specs(specs)
+    return book
+
+
 async def _receive_data(ib: IB, symbol: str) -> None:
     """Receive historical bars + a delayed quote on the live connection."""
-    contract = Stock(symbol, "SMART", "USD")
+    listing = _probe_listings().resolve(symbol)
+    contract = make_stock(
+        listing.symbol, currency=listing.currency, exchange=listing.exchange,
+    )
     qualified = await ib.qualifyContractsAsync(contract)
     if not qualified:
         raise ProbeError(f"could not qualify contract {symbol}")
@@ -223,7 +237,10 @@ async def _bracket_round_trip(ib: IB, symbol: str) -> None:
     """
     from marketmind.broker.ib_adapter import build_protected_entry
 
-    contract = Stock(symbol, "SMART", "USD")
+    listing = _probe_listings().resolve(symbol)
+    contract = make_stock(
+        listing.symbol, currency=listing.currency, exchange=listing.exchange,
+    )
     qualified = await ib.qualifyContractsAsync(contract)
     if not qualified:
         raise ProbeError(f"could not qualify contract {symbol}")
