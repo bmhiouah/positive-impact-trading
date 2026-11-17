@@ -12,7 +12,9 @@ one clean SQLite store, and only then lets long-only strategies run. Strategies
 declare the data they need, so the tool shows what is possible *with the data
 you really have* instead of pretending.
 
-Technical details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The original
+Technical details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Product
+decisions and operator constraints (pipeline priority, file-driven target,
+France / IBKR context): [`docs/DECISIONS.md`](docs/DECISIONS.md). The original
 AI-research-platform vision is kept (for context only) in
 [`docs/archive/`](docs/archive/README.md).
 
@@ -185,6 +187,7 @@ stop resting at IBKR.
 ```
 README.md                       this guide
 docs/ARCHITECTURE.md            module map, lifecycle, data and order design
+docs/DECISIONS.md               product decisions and operator constraints
 docs/archive/                   pre-MVP vision documents (not runtime code)
 marketmind/
   config.py                     fixed constants — the only place to change the session
