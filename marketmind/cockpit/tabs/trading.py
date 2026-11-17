@@ -40,6 +40,11 @@ def _diagnosis(state, journal, coverage) -> None:
         parts.append(f"<b>{missing_debt}</b> instruments have no debt ratio — "
                      "the impact screen blocks those equities. Enter the ratio "
                      "on Strategies")
+    held_back = int(result.get("held_back") or 0)
+    if held_back:
+        parts.append(f"<b>{held_back}</b> buys waited because the book is "
+                     f"already at {config.MAX_OPEN_POSITIONS} names or "
+                     f"{config.MAX_BOOK_RISK:.0%} of the account at risk")
     blocked = int(result.get("blocked") or 0)
     if blocked:
         parts.append(f"<b>{blocked}</b> ideas were refused by the impact screen "

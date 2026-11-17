@@ -12,7 +12,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from marketmind import config
+from marketmind import config, filings
 from marketmind.cockpit import theme
 from marketmind.cockpit.state import get_market, get_state, sync_data, sync_status
 
@@ -184,11 +184,11 @@ def _render_universe(market) -> None:
 
 def _render_compliance(market, store, coverage) -> None:
     theme.callout(
-        "IBKR's paper account refuses <code>reqFundamentalData</code> "
-        "(error 10358), so debt-to-market-cap and excluded sectors cannot be "
-        "read from the API. Enter them here: the impact screen reads this same "
-        "table and <b>blocks any equity without a debt ratio</b>. Whitelisted "
-        "impact ETFs (SPUS, HLAL…) are exempt.",
+        "Debt, profitability and asset growth are read from SEC filings when "
+        "the data is synced. IBKR's paper account still refuses "
+        "<code>reqFundamentalData</code> (error 10358). A ratio you type here "
+        "overrides the filing. An equity with no debt ratio is blocked. "
+        "Whitelisted impact ETFs (SPUS, HLAL…) are exempt.",
         tone="warn", caption="The one dataset IBKR will not give us",
     )
     symbols = [row["symbol"] for row in coverage] or market.universe.symbols()
@@ -254,6 +254,27 @@ def _render_compliance(market, store, coverage) -> None:
                                             "Debt / MCap", "Currency", "Source"]),
             width="stretch", hide_index=True,
         )
+    if st.button("Read filings from EDGAR", key="read_filings"):
+        with st.spinner("Reading annual reports…"):
+            outcome = filings.refresh(
+                store, symbols, force=True,
+            )
+        st.caption(" · ".join(f"{name}: {status}" for name, status in outcome.items()))
+        st.rerun()
+    filed = filings.rows(store)
+    if filed:
+        st.dataframe(pd.DataFrame([{
+            "Symbol": row["symbol"],
+            "Screen sector": row["sector"] or "—",
+            "Debt / MCap": (f"{row['debt_to_market_cap']:.1%}"
+                            if row["debt_to_market_cap"] is not None else "—"),
+            "Gross profit / assets": (f"{row['gross_profitability']:.1%}"
+                                      if row["gross_profitability"] is not None else "—"),
+            "Asset growth": (f"{row['asset_growth']:+.1%}"
+                             if row["asset_growth"] is not None else "—"),
+            "As of": row["as_of"] or "—",
+            "Note": row["error"] or "",
+        } for row in filed]), width="stretch", hide_index=True)
 
 
 def _render_price_explorer(market, coverage) -> None:

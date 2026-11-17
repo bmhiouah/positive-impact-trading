@@ -121,8 +121,30 @@ def _render_contest(store, symbols) -> contest.Report:
         st.caption(
             "R is the result divided by the initial stop distance, after "
             "five basis points of cost each way. A bar that touches the stop "
-            "and the target counts as the stop."
+            "and the target counts as the stop. A rule is not promoted unless "
+            "the later window has at least eight trades and still makes money "
+            "with its best trade removed."
         )
+    if report.later_curve:
+        theme.section("📈  Later window of the live rule",
+                      "The stretch the choice did not use to pick itself")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=[point[0] for point in report.later_curve],
+            y=[point[1] for point in report.later_curve],
+            mode="lines", name="Cumulative R",
+            line=dict(color=theme.BRAND, width=2),
+        ))
+        theme.style_figure(fig, height=280)
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    if report.later_trades:
+        st.dataframe(pd.DataFrame([{
+            "Symbol": trade["symbol"],
+            "Entry": trade["entry"],
+            "Exit": trade["exit"],
+            "R": trade["r"],
+            "How it closed": trade["reason"],
+        } for trade in report.later_trades]), width="stretch", hide_index=True)
     return report
 
 

@@ -248,6 +248,10 @@ def sync_data(symbols: Optional[list[str]] = None) -> bool:
         journal.record(snapshot)
         _refresh_trade_outcomes(adapter)
         result = get_market().sync(adapter, symbols=symbols)
+        try:
+            get_market().refresh_filings(symbols)
+        except Exception as exc:  # noqa: BLE001 - filings must not fail the bar sync
+            logger.warning("Filing refresh failed: %s", exc)
         state.last_sync = result
         state.sync_error = None
         state.live_snapshot = snapshot

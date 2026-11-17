@@ -47,6 +47,7 @@ MULTIPLES = (1.5, 2.0, 2.5, 3.0)
 TARGETS = (None, 2.0, 3.0)
 HOLDS = (None, 63)
 MIN_TRADES = 5
+MIN_CONFIRM_TRADES = 8
 MIN_BARS = 400
 SELECTION_SHARE = 0.60
 COST = 0.0005  # five basis points per side
@@ -106,6 +107,7 @@ class Trade:
     exit_day: str
     r_multiple: float
     reason: str
+    symbol: str = ""
 
 
 @dataclass(frozen=True)
@@ -117,6 +119,7 @@ class Score:
     confirmation_r: float
     confirmation_trades: int
     confirmation_dd: float
+    confirmation_ex_best: float = 0.0
 
     def as_row(self) -> Dict[str, object]:
         return {
@@ -128,6 +131,7 @@ class Score:
             "confirmation_r": round(self.confirmation_r, 3),
             "confirmation_trades": self.confirmation_trades,
             "confirmation_dd": round(self.confirmation_dd, 3),
+            "confirmation_ex_best": round(self.confirmation_ex_best, 3),
         }
 
 
@@ -144,6 +148,8 @@ class Report:
     confirmation_start: str
     rows: Tuple[Score, ...]
     updated_at: str
+    later_curve: Tuple[Tuple[str, float], ...] = ()
+    later_trades: Tuple[Dict[str, object], ...] = ()
 
 
 def rule_to_dict(rule: Rule) -> Dict[str, object]:
@@ -241,7 +247,7 @@ def _r(entry: float, exit_price: float, risk: float, cost: float) -> float:
 def simulate(open_: np.ndarray, high: np.ndarray, low: np.ndarray,
              close: np.ndarray, atr: np.ndarray, signal: np.ndarray,
              known: np.ndarray, dates: Sequence[str], rule: Rule,
-             cost: float = COST) -> List[Trade]:
+             cost: float = COST, symbol: str = "") -> List[Trade]:
     """Trade one name. A signal at the close is filled at the next open.
 
     When a bar touches the stop and the target, the stop is the fill. A gap
@@ -267,7 +273,7 @@ def simulate(open_: np.ndarray, high: np.ndarray, low: np.ndarray,
             entry_day=str(dates[entry_i])[:10],
             exit_day=str(dates[index])[:10],
             r_multiple=_r(entry_px, price, risk, cost),
-            reason=reason,
+            reason=reason, symbol=symbol,
         ))
         in_pos = False
         pending_reason = None
@@ -345,7 +351,19 @@ def _drawdown(values: Sequence[float]) -> float:
     return worst
 
 
-def _window_score(trades: Sequence[Trade], cutoff: str) -> Tuple[float, int, float, float, int, float]:
+def _ex_best(trades: Sequence[Trade]) -> float:
+    """Later-window money with the single best trade removed.
+
+    One lucky fill cannot carry a promotion. Fewer than two trades scores
+    as zero, which fails the gate.
+    """
+    if len(trades) < 2:
+        return 0.0
+    values = [trade.r_multiple for trade in trades]
+    return float(sum(values) - max(values))
+
+
+def _window_score(trades: Sequence[Trade], cutoff: str):
     selected = [trade for trade in trades if trade.entry_day < cutoff]
     confirmed = [trade for trade in trades if trade.entry_day >= cutoff]
     return (
@@ -355,6 +373,7 @@ def _window_score(trades: Sequence[Trade], cutoff: str) -> Tuple[float, int, flo
         float(sum(trade.r_multiple for trade in confirmed)),
         len(confirmed),
         _drawdown([trade.r_multiple for trade in confirmed]),
+        _ex_best(confirmed),
     )
 
 
@@ -372,9 +391,18 @@ def choose(scores: Sequence[Score], incumbent: Rule = INCUMBENT) -> Tuple[Rule, 
     current_r = current.confirmation_r if current is not None else 0.0
     if favorite.rule == incumbent:
         return incumbent, False, "The selection window kept the rule already running."
-    if favorite.confirmation_r > 0 and favorite.confirmation_r > current_r:
+    if favorite.confirmation_trades < MIN_CONFIRM_TRADES:
+        return (incumbent, False,
+                f"The selection favorite has {favorite.confirmation_trades} trades "
+                f"in the later window. It needs {MIN_CONFIRM_TRADES}, so the live rule stays.")
+    if favorite.confirmation_r <= 0 or favorite.confirmation_ex_best <= 0:
+        return (incumbent, False,
+                "Without its single best later trade, the favorite does not make "
+                "money, so the live rule stays.")
+    if favorite.confirmation_r > current_r:
         return (favorite.rule, True,
-                "A challenger made more money on the later window, so it is now the live rule.")
+                "A challenger made more money on the later window, and it still "
+                "made money without its best trade, so it is now the live rule.")
     return (incumbent, False,
             "The selection favorite did not beat the live rule on the later window, so the live rule stays.")
 
@@ -413,17 +441,18 @@ def score_books(books: Dict[str, dict], rules: Optional[Sequence[Rule]] = None,
     scores: List[Score] = []
     for rule in rules or grid():
         trades: List[Trade] = []
-        for book in prepared.values():
+        for symbol, book in prepared.items():
             signal, known = book["signals"][rule.entry]
             trades.extend(simulate(
                 book["open"], book["high"], book["low"], book["close"],
-                book["atr"], signal, known, book["dates"], rule,
+                book["atr"], signal, known, book["dates"], rule, symbol=symbol,
             ))
-        (sel_r, sel_n, sel_dd, con_r, con_n, con_dd) = _window_score(trades, cutoff)
+        (sel_r, sel_n, sel_dd, con_r, con_n, con_dd, con_ex) = _window_score(trades, cutoff)
         scores.append(Score(
             rule=rule, selection_r=sel_r, selection_trades=sel_n,
             selection_dd=sel_dd, confirmation_r=con_r,
             confirmation_trades=con_n, confirmation_dd=con_dd,
+            confirmation_ex_best=con_ex,
         ))
     return cutoff, scores
 
@@ -494,6 +523,35 @@ def _blank(reason: str, fingerprint_: str) -> Report:
     )
 
 
+def later_path(books: Dict[str, dict], rule: Rule, cutoff: str
+               ) -> Tuple[Tuple[Tuple[str, float], ...], Tuple[Dict[str, object], ...]]:
+    """The later window of one rule: cumulative R and every trade."""
+    prepared_trades: List[Trade] = []
+    for symbol, book in books.items():
+        high, low, close = book["high"], book["low"], book["close"]
+        signal, known = _signal_arrays(high, low, close, book["volume"], rule.entry)
+        prepared_trades.extend(simulate(
+            book["open"], high, low, close, _atr_array(high, low, close),
+            signal, known, book["dates"], rule, symbol=symbol,
+        ))
+    confirmed = [trade for trade in prepared_trades if trade.entry_day >= cutoff]
+    confirmed.sort(key=lambda trade: (trade.exit_day, trade.symbol, trade.entry_day))
+    equity = 0.0
+    curve = []
+    rows = []
+    for trade in confirmed:
+        equity += trade.r_multiple
+        curve.append((trade.exit_day, round(equity, 4)))
+        rows.append({
+            "symbol": trade.symbol,
+            "entry": trade.entry_day,
+            "exit": trade.exit_day,
+            "r": round(trade.r_multiple, 3),
+            "reason": trade.reason,
+        })
+    return tuple(curve), tuple(rows)
+
+
 def run(store, symbols: Sequence[str]) -> Report:
     """Score the grid and decide whether the live rule changes."""
     mark = fingerprint(store, symbols) if symbols else "0:"
@@ -511,10 +569,12 @@ def run(store, symbols: Sequence[str]) -> Report:
     cutoff, scores = score_books(books)
     holder, promoted, reason = choose(scores)
     ranked = tuple(sorted(scores, key=lambda row: row.selection_r, reverse=True)[:8])
+    curve, later_trades = later_path(books, holder, cutoff)
     return Report(
         ready=True, promoted=promoted, holder=holder, reason=reason,
         fingerprint=mark, selection_end=cutoff, confirmation_start=cutoff,
         rows=ranked, updated_at=_utcnow(),
+        later_curve=curve, later_trades=later_trades,
     )
 
 
@@ -525,6 +585,8 @@ def save(store, report: Report) -> None:
         "selection_end": report.selection_end,
         "confirmation_start": report.confirmation_start,
         "rows": [row.as_row() for row in report.rows],
+        "later_curve": [list(point) for point in report.later_curve],
+        "later_trades": list(report.later_trades),
     }
     store.conn.execute(
         """INSERT INTO rule_contest
@@ -563,7 +625,12 @@ def load(store) -> Optional[Report]:
             confirmation_r=float(item["confirmation_r"]),
             confirmation_trades=int(item["confirmation_trades"]),
             confirmation_dd=float(item["confirmation_dd"]),
+            confirmation_ex_best=float(item.get("confirmation_ex_best") or 0.0),
         ))
+    curve = tuple(
+        (str(point[0]), float(point[1]))
+        for point in payload.get("later_curve") or []
+    )
     return Report(
         ready=bool(row[2]), promoted=bool(row[3]),
         holder=rule_from_dict(json.loads(row[4])),
@@ -572,6 +639,8 @@ def load(store) -> Optional[Report]:
         selection_end=str(payload.get("selection_end") or ""),
         confirmation_start=str(payload.get("confirmation_start") or ""),
         rows=tuple(scores),
+        later_curve=curve,
+        later_trades=tuple(payload.get("later_trades") or []),
     )
 
 
