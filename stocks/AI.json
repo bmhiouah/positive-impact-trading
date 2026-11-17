@@ -1,5 +1,5 @@
 {
-  "ticker": "SAN",
+  "ticker": "AI",
   "enabled": true,
   "currency": "EUR",
   "exchange": "SMART",
@@ -13,5 +13,5 @@
     "fixed_take_profit_pct": null,
     "fixed_stop_pct": null
   },
-  "notes": "Sanofi (Euronext Paris). Must use EUR \u2014 USD SMART resolves to Banco Santander."
+  "notes": "Air Liquide (Euronext Paris). EUR SMART. Replaces SAN \u2014 EUR SAN resolves to Banco Santander (Banks)."
 }
