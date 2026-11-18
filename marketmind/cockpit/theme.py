@@ -166,6 +166,12 @@ _CSS = f"""
   .stButton > button[data-testid="stBaseButton-primary"] {{
       background: {BRAND}; color: #FFFFFF; border: 1px solid {BRAND};
   }}
+  /* Keep the selected toggle state readable even when that button is disabled. */
+  .stButton > button[kind="primary"]:disabled,
+  .stButton > button[data-testid="stBaseButton-primary"]:disabled {{
+      background: {BRAND}; color: #FFFFFF; border: 1px solid {BRAND};
+      opacity: 1;
+  }}
   .stButton > button[kind="secondary"],
   .stButton > button[data-testid="stBaseButton-secondary"] {{
       background: {SURFACE}; color: {INK}; border: 1px solid {BORDER};
