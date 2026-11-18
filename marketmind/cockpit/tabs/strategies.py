@@ -268,6 +268,5 @@ def _render_compare(store, symbols, availability) -> None:
         "When the algo runs it sends the <b>live rule from the contest</b>. "
         "Until a challenger wins the later window, that rule is 12-month "
         "momentum with a trailing stop. The impact screen still has to pass. "
-        "The other cards are here to study. A missing debt ratio blocks the "
-        "buy and is not stored.",
+        "The other cards are here to study.",
     )

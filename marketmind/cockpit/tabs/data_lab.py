@@ -49,7 +49,6 @@ def _coverage_table(rows: List[Dict[str, Any]]) -> pd.DataFrame:
             "Last close": (f"{row['last_close']:,.2f}"
                            if row.get("last_close") else "—"),
             "Bid / Ask": _quote_pair(quote),
-            "Debt data": "Yes" if row.get("fundamentals") else "Missing",
             "Last sync": (str(row.get("last_sync") or "—")[:16]
                           .replace("T", " ")),
             "First / last bar": (
@@ -182,80 +181,6 @@ def _render_universe(market) -> None:
                 st.rerun()
 
 
-def _render_compliance(market, store, coverage) -> None:
-    theme.callout(
-        "IBKR's paper account refuses <code>reqFundamentalData</code> "
-        "(error 10358), so debt-to-market-cap and excluded sectors cannot be "
-        "read from the API. Enter them here: the impact screen reads this same "
-        "table and <b>blocks any equity without a debt ratio</b>. Whitelisted "
-        "impact ETFs (SPUS, HLAL…) are exempt.",
-        tone="warn", caption="The one dataset IBKR will not give us",
-    )
-    symbols = [row["symbol"] for row in coverage] or market.universe.symbols()
-    if not symbols:
-        return
-    selected = st.selectbox("Instrument", symbols, key="fundamental_symbol")
-    existing = store.get_fundamental_data(selected)
-    current_pct = 100.0 * float(
-        existing.debt_to_market_cap if existing and
-        existing.debt_to_market_cap is not None else 0.0
-    )
-
-    with st.form("fundamental_form"):
-        c1, c2 = st.columns(2)
-        sector = c1.text_input("Sector", value=(existing.sector if existing else "") or "",
-                               placeholder="e.g. Technology")
-        industry = c2.text_input("Industry",
-                                 value=(existing.industry if existing else "") or "")
-        c3, c4, c5 = st.columns(3)
-        ratio_pct = c3.number_input("Debt / market cap (%)", min_value=0.0,
-                                    max_value=100.0, value=current_pct,
-                                    step=0.5, format="%.2f")
-        market_cap = c4.number_input("Market cap (optional)", min_value=0.0,
-                                     value=float(existing.market_cap or 0)
-                                     if existing else 0.0, format="%.0f")
-        total_debt = c5.number_input("Total debt (optional)", min_value=0.0,
-                                     value=float(existing.total_debt or 0)
-                                     if existing else 0.0, format="%.0f")
-        if st.form_submit_button("Save compliance data", type="primary"):
-            try:
-                ratio = (
-                    total_debt / market_cap
-                    if ratio_pct == 0 and market_cap > 0 and total_debt > 0
-                    else ratio_pct / 100.0
-                )
-                market.set_fundamental(
-                    selected,
-                    sector=sector.strip() or None,
-                    industry=industry.strip() or None,
-                    debt_to_market_cap=ratio,
-                    market_cap=market_cap or None,
-                    total_debt=total_debt or None,
-                )
-                st.success(f"{selected}: saved. The screen now sees "
-                           f"{ratio_pct:.2f}% debt / market cap.")
-                st.rerun()
-            except Exception as exc:  # noqa: BLE001
-                st.error(str(exc))
-
-    limit = 0.33
-    status = ("compliant" if ratio_pct / 100.0 < limit else "over the 33% limit")
-    st.caption(f"Current screen: {ratio_pct:.2f}% — {status}. "
-               "Values are stored in `fundamental_data`, the same source the "
-               "compliance gate uses.")
-
-    all_rows = store.conn.execute(
-        """SELECT symbol, sector, industry, debt_to_market_cap, currency, source
-           FROM fundamental_data ORDER BY symbol"""
-    ).fetchall()
-    if all_rows:
-        st.dataframe(
-            pd.DataFrame(all_rows, columns=["Symbol", "Sector", "Industry",
-                                            "Debt / MCap", "Currency", "Source"]),
-            width="stretch", hide_index=True,
-        )
-
-
 def _render_price_explorer(market, coverage) -> None:
     with_data = [r["symbol"] for r in coverage if r["bars"] > 0]
     if not with_data:
@@ -297,15 +222,13 @@ def render(store=None) -> None:
                    tone="blue" if summary["ready"] else "default"),
         theme.card("Daily bars stored", f"{summary['bars']:,}",
                    f"Idempotent upserts · {config.HISTORY_DURATION} history"),
-        theme.card("Debt ratios", f"{summary['with_fundamentals']}",
-                   "Entered manually — API fundamentals unavailable"),
     ])
 
     theme.section("IBKR sync", "One connection at a time")
     _render_sync(state)
 
     tabs = st.tabs([
-        "Coverage", "Universe", "Compliance", "Prices", "Sync log",
+        "Coverage", "Universe", "Prices", "Sync log",
     ])
     with tabs[0]:
         if coverage:
@@ -322,10 +245,8 @@ def render(store=None) -> None:
     with tabs[1]:
         _render_universe(market)
     with tabs[2]:
-        _render_compliance(market, store, coverage)
-    with tabs[3]:
         _render_price_explorer(market, coverage)
-    with tabs[4]:
+    with tabs[3]:
         logs = market.sync_log(100)
         if logs:
             st.dataframe(pd.DataFrame(logs).rename(columns={

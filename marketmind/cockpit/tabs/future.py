@@ -16,7 +16,7 @@ def render(store=None) -> None:
     )
     strategies.render_ideas(store)
 
-    theme.section("📥  Data they need", "One sync, then the tickers and the debt ratios")
+    theme.section("📥  Data they need", "One sync, then the tickers")
     state = sync_status(get_state())
     data_lab._render_sync(state)
 
@@ -31,7 +31,5 @@ def render(store=None) -> None:
 
     data_lab._render_universe(market)
 
-    with st.expander("Debt ratios and sectors"):
-        data_lab._render_compliance(market, store, coverage)
     with st.expander("Price history"):
         data_lab._render_price_explorer(market, coverage)
