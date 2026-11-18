@@ -68,14 +68,18 @@ def render(store=None) -> None:
     # --- control panel -------------------------------------------------------
     control, status = st.columns([2, 3])
     with control:
+        # Toggle colours: blue = current state, white = the other action.
+        # Stopped → Stop blue / Start white; running → Start blue / Stop white.
+        start_type = "primary" if state.algo_running else "secondary"
+        stop_type = "secondary" if state.algo_running else "primary"
         b1, b2 = st.columns(2)
         if b1.button("Start Algo", disabled=state.algo_running,
-                     type="primary", width="stretch", key="start_algo"):
+                     type=start_type, width="stretch", key="start_algo"):
             with st.spinner("Connect → read capital → start trading…"):
                 start_algo()
             st.rerun()
         if b2.button("Stop Algo", disabled=not state.algo_running,
-                     width="stretch", key="stop_algo"):
+                     type=stop_type, width="stretch", key="stop_algo"):
             stop_algo()
             st.rerun()
         st.caption(

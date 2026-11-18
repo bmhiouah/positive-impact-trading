@@ -31,15 +31,20 @@ def render(store=None) -> None:
     split = (allocation_of(state.live_snapshot)
              if state.live_snapshot is not None else journal.split())
 
+    # Toggle colours: blue = current state, white = the other action.
+    # Stopped → Stop blue / Start white; running → Start blue / Stop white.
+    start_type = "primary" if state.algo_running else "secondary"
+    stop_type = "secondary" if state.algo_running else "primary"
+
     start, stop, read = st.columns(3)
     with start:
-        if st.button("▶  Start algo", type="primary", disabled=state.algo_running,
+        if st.button("▶  Start algo", type=start_type, disabled=state.algo_running,
                      width="stretch", key="start_algo"):
             with st.spinner("Connect → read capital → start trading…"):
                 start_algo()
             st.rerun()
     with stop:
-        if st.button("⏹  Stop algo", disabled=not state.algo_running,
+        if st.button("⏹  Stop algo", type=stop_type, disabled=not state.algo_running,
                      width="stretch", key="stop_algo"):
             stop_algo()
             st.rerun()
