@@ -56,6 +56,8 @@ marketmind/
     tabs/                   present · future · past, plus the sections they reuse
 scripts/
   run_cockpit.py            single cockpit launcher
+  start_trading_morning.sh  macOS morning: Gateway (:4002) + cockpit (:8501), idempotent
+  install_desktop_launcher.sh  Desktop “Positive Impact Trading.command” shortcut
   ib_connection_probe.py    standalone connect → disconnect → reconnect + bracket
 tests/                      unit tests + opt-in live Gateway integration tests
 docs/archive/               pre-MVP vision documents (not part of the lab)
