@@ -31,20 +31,30 @@ def render(store=None) -> None:
     split = (allocation_of(state.live_snapshot)
              if state.live_snapshot is not None else journal.split())
 
+    running = state.algo_running
+    theme.pills([
+        theme.pill("Algo Running" if running else "Algo Stopped",
+                   "ok" if running else "mute"),
+    ])
+
+    # Clickable action = primary; inactive Start/Stop = greyed disabled.
+    start_type = "secondary" if running else "primary"
+    stop_type = "primary" if running else "secondary"
+
     start, stop, read = st.columns(3)
     with start:
-        if st.button("▶  Start algo", type="primary", disabled=state.algo_running,
+        if st.button("▶  Start algo", type=start_type, disabled=running,
                      width="stretch", key="start_algo"):
             with st.spinner("Connect → read capital → start trading…"):
                 start_algo()
             st.rerun()
     with stop:
-        if st.button("⏹  Stop algo", disabled=not state.algo_running,
+        if st.button("⏹  Stop algo", type=stop_type, disabled=not running,
                      width="stretch", key="stop_algo"):
             stop_algo()
             st.rerun()
     with read:
-        if st.button("↻  Read account", disabled=state.algo_running,
+        if st.button("↻  Read account", disabled=running,
                      width="stretch", key="read_account"):
             with st.spinner("Connecting → reading account → disconnecting…"):
                 refresh_snapshot()

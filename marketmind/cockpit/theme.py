@@ -170,6 +170,16 @@ _CSS = f"""
   .stButton > button[data-testid="stBaseButton-secondary"] {{
       background: {SURFACE}; color: {INK}; border: 1px solid {BORDER};
   }}
+  /* Inactive Start/Stop looks greyed; clickable restores brand primary. */
+  .stButton > button:disabled,
+  .stButton > button[disabled],
+  .stButton > button[kind="primary"]:disabled,
+  .stButton > button[data-testid="stBaseButton-primary"]:disabled,
+  .stButton > button[kind="secondary"]:disabled,
+  .stButton > button[data-testid="stBaseButton-secondary"]:disabled {{
+      background: #E8EEF4; color: {FAINT}; border: 1px solid {BORDER};
+      opacity: 1; cursor: not-allowed;
+  }}
   button[data-variant="segmented_control"] {{
       min-height: 46px; border-radius: 12px !important;
   }}
