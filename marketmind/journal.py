@@ -228,10 +228,8 @@ class PaperJournal:
                 WHERE interest_pnl = 0
                   AND pnl_vs_original <> trading_pnl"""
         )
-        # A blocked row never reached IBKR. The journal keeps what was sent.
-        self.conn.execute(
-            "DELETE FROM paper_orders WHERE lower(status) = 'blocked'"
-        )
+        # Keep blocked rows: the cockpit journal explains compliance refusals
+        # (missing debt ratio, excluded sector). They never count as trades.
         self.conn.commit()
 
     # ------------------------------------------------------------------
@@ -542,6 +540,22 @@ class PaperJournal:
                 (int(exit_order_id), symbol),
             )
             self.conn.commit()
+
+    def has_submitted_entry(self, symbol: str) -> bool:
+        """True when this symbol already had a bracket actually sent to IBKR.
+
+        Blocked / error rows do not count — cold-start must keep retrying until
+        a real submission lands (for example after debt ratios are filled).
+        """
+        row = self.conn.execute(
+            """SELECT 1 FROM paper_orders
+               WHERE symbol = ?
+                 AND lower(status) NOT IN
+                     ('blocked', 'error', 'failed', 'rejected')
+               LIMIT 1""",
+            (symbol,),
+        ).fetchone()
+        return row is not None
 
     def last_closed(self, symbol: str) -> Optional[Dict[str, Any]]:
         """The most recent finished entry for this symbol, if any."""

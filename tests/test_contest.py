@@ -138,6 +138,8 @@ def test_allow_entry_state_requires_rising_edge(monkeypatch) -> None:
     assert contest.allow_entry(book, rule, 2, None, None) is True
     assert contest.allow_entry(book, rule, 3, None, None) is False
     assert contest.allow_entry(book, rule, 1, None, None) is False
+    # Cold start: never-traded name may enter while the regime is already on.
+    assert contest.allow_entry(book, rule, 3, None, None, cold_start=True) is True
     # Event entries stay level-triggered.
     breakout = Rule("breakout", 2.0)
     assert contest.allow_entry(book, breakout, 3, None, None) is True
