@@ -5,7 +5,7 @@ integrates with the Impact-compliant execution engine.
 """
 
 from .contracts import Listing, ListingBook, make_stock
-from .ib_adapter import IBKRAdapter, OrderFill
+from .ib_adapter import IBKRAdapter, OrderFill, format_gateway_error
 
 __all__ = [
     "IBKRAdapter",
@@ -13,4 +13,5 @@ __all__ = [
     "Listing",
     "ListingBook",
     "make_stock",
+    "format_gateway_error",
 ]

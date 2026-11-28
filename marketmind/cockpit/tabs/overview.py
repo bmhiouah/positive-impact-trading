@@ -218,13 +218,16 @@ def render(store=None) -> None:
     action, note = st.columns([1.15, 3.6], vertical_alignment="center")
     with action:
         if st.button("Read account", disabled=state.algo_running,
-                     type="primary", width="stretch", key="read_account"):
+                     type="primary", width="stretch",
+                     key="overview_read_account"):
             with st.spinner("Connecting → reading account → disconnecting…"):
                 refresh_snapshot()
             st.rerun()
     with note:
         if state.refresh_error:
             st.error(state.refresh_error)
+        elif state.ibkr_last_error:
+            st.error(state.ibkr_last_error)
         elif state.algo_running:
             st.caption("The running algo refreshes the journal every cycle.")
         elif state.snapshot_at:

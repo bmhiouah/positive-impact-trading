@@ -154,12 +154,15 @@ def start_algo(
             runner.stop()
         except Exception:  # noqa: BLE001
             pass
+        from marketmind.broker.ib_adapter import format_gateway_error
+
         state.algo_runner = None
         state.algo_running = False
         state.ibkr_connected = False
-        state.ibkr_last_error = str(exc)
-        state.algo_last_error = str(exc)
-        logger.error("Start Algo failed: %s", exc)
+        message = format_gateway_error(exc)
+        state.ibkr_last_error = message
+        state.algo_last_error = message
+        logger.error("Start Algo failed: %s", message)
         return
 
     state.algo_runner = runner
@@ -198,10 +201,14 @@ def refresh_snapshot() -> bool:
     is stopped, since there can be only one connection at a time.
     """
     from marketmind.broker import IBKRAdapter
+    from marketmind.broker.ib_adapter import format_gateway_error
 
     state = get_state()
     if state.algo_running:
-        state.refresh_error = "Stop the algo first — only one connection is allowed."
+        state.refresh_error = (
+            "Stop the algo first — only one IBKR connection (client id 1) "
+            "is allowed. Then click Read account."
+        )
         return False
 
     adapter = IBKRAdapter()
@@ -216,10 +223,15 @@ def refresh_snapshot() -> bool:
         state.snapshot_at = datetime.now(timezone.utc).isoformat()
         state.ibkr_account = snapshot.account_id
         state.refresh_error = None
+        # A successful read clears stale Start Algo / cycle errors so the
+        # Trading tab does not keep showing a prior Gateway failure.
+        state.ibkr_last_error = None
+        state.algo_last_error = None
+        state.ibkr_connected = False  # session closed in finally
         return True
     except Exception as exc:  # noqa: BLE001
-        state.refresh_error = str(exc)
-        logger.error("Snapshot refresh failed: %s", exc)
+        state.refresh_error = format_gateway_error(exc)
+        logger.error("Snapshot refresh failed: %s", state.refresh_error)
         return False
     finally:
         adapter.disconnect()
@@ -233,10 +245,14 @@ def sync_data(symbols: Optional[list[str]] = None) -> bool:
     the journal too, which makes this the natural "daily check-in" action.
     """
     from marketmind.broker import IBKRAdapter
+    from marketmind.broker.ib_adapter import format_gateway_error
 
     state = get_state()
     if state.algo_running:
-        state.sync_error = "Stop the algo first — only one connection is allowed."
+        state.sync_error = (
+            "Stop the algo first — only one IBKR connection (client id 1) "
+            "is allowed."
+        )
         return False
 
     adapter = IBKRAdapter()
@@ -254,10 +270,12 @@ def sync_data(symbols: Optional[list[str]] = None) -> bool:
         state.snapshot_at = datetime.now(timezone.utc).isoformat()
         state.ibkr_account = snapshot.account_id
         state.refresh_error = None
+        state.ibkr_last_error = None
+        state.algo_last_error = None
         return True
     except Exception as exc:  # noqa: BLE001
-        state.sync_error = str(exc)
-        logger.error("Data sync failed: %s", exc)
+        state.sync_error = format_gateway_error(exc)
+        logger.error("Data sync failed: %s", state.sync_error)
         return False
     finally:
         adapter.disconnect()

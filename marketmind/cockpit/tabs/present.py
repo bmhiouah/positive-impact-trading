@@ -55,15 +55,16 @@ def render(store=None) -> None:
             st.rerun()
     with read:
         if st.button("↻  Read account", disabled=running,
-                     width="stretch", key="read_account"):
+                     width="stretch", key="trading_read_account"):
             with st.spinner("Connecting → reading account → disconnecting…"):
                 refresh_snapshot()
             st.rerun()
 
-    if state.ibkr_last_error or state.algo_last_error:
-        st.error(state.ibkr_last_error or state.algo_last_error)
-    elif state.refresh_error:
+    # Prefer the latest Read Account result over a stale Start Algo error.
+    if state.refresh_error:
         st.error(state.refresh_error)
+    elif state.ibkr_last_error or state.algo_last_error:
+        st.error(state.ibkr_last_error or state.algo_last_error)
     elif state.algo_running:
         st.caption("Stopping leaves the stop resting at IBKR.")
     elif state.snapshot_at:
