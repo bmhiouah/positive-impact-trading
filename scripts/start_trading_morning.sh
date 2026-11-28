@@ -77,9 +77,31 @@ fi
 echo
 
 # --- Streamlit cockpit ------------------------------------------------------
-if port_listening "127.0.0.1" "$COCKPIT_PORT"; then
-  echo "Cockpit: already serving ${COCKPIT_URL} — reusing"
-else
+# Fingerprint the checkout so a long-lived :8501 process cannot hide master
+# updates (Desktop launcher used to "reuse" a days-old Streamlit).
+COCKPIT_REV_FILE="${LOG_DIR}/cockpit.rev"
+CURRENT_REV="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+FORCE_RESTART="${PIT_FORCE_COCKPIT_RESTART:-0}"
+
+stop_cockpit_on_port() {
+  local pids
+  pids="$(lsof -t -iTCP:"${COCKPIT_PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -z "$pids" ]]; then
+    return 0
+  fi
+  echo "  stopping stale cockpit PID(s): ${pids}"
+  # shellcheck disable=SC2086
+  kill $pids 2>/dev/null || true
+  sleep 1
+  pids="$(lsof -t -iTCP:"${COCKPIT_PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -n "$pids" ]]; then
+    # shellcheck disable=SC2086
+    kill -9 $pids 2>/dev/null || true
+    sleep 1
+  fi
+}
+
+start_cockpit() {
   if [[ ! -x "$PYTHON" ]]; then
     echo "ERROR: Python not found at ${PYTHON}"
     echo "Set PIT_PYTHON to the project interpreter (conda env py314)."
@@ -90,16 +112,34 @@ else
     echo "Check out master (or pull) so the repo scripts are present."
     exit 1
   fi
-  echo "Cockpit: starting on port ${COCKPIT_PORT} (log: ${COCKPIT_LOG})"
+  echo "Cockpit: starting on port ${COCKPIT_PORT} (rev ${CURRENT_REV:0:7}, log: ${COCKPIT_LOG})"
   # Background so this script can open the browser and return.
   nohup "$PYTHON" "${REPO_ROOT}/scripts/run_cockpit.py" --port "$COCKPIT_PORT" \
     >"$COCKPIT_LOG" 2>&1 &
   disown || true
+  echo "$CURRENT_REV" >"$COCKPIT_REV_FILE"
   if ! wait_for_port "127.0.0.1" "$COCKPIT_PORT" "Cockpit" 45; then
     echo "ERROR: cockpit did not come up. Tail of log:"
     tail -n 40 "$COCKPIT_LOG" || true
     exit 1
   fi
+}
+
+if port_listening "127.0.0.1" "$COCKPIT_PORT"; then
+  PREV_REV="$(cat "$COCKPIT_REV_FILE" 2>/dev/null || echo "")"
+  if [[ "$FORCE_RESTART" == "1" ]]; then
+    echo "Cockpit: PIT_FORCE_COCKPIT_RESTART=1 — restarting ${COCKPIT_URL}"
+    stop_cockpit_on_port
+    start_cockpit
+  elif [[ -z "$PREV_REV" || "$PREV_REV" != "$CURRENT_REV" ]]; then
+    echo "Cockpit: code changed (${PREV_REV:-unknown} → ${CURRENT_REV:0:7}) — restarting (stops in-process algo if any)"
+    stop_cockpit_on_port
+    start_cockpit
+  else
+    echo "Cockpit: already serving ${COCKPIT_URL} @ ${CURRENT_REV:0:7} — reusing"
+  fi
+else
+  start_cockpit
 fi
 
 echo
