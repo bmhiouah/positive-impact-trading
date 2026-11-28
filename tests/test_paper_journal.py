@@ -123,18 +123,22 @@ def test_bracket_orders_are_logged_with_tp_and_sl(journal) -> None:
     assert row["exit_price"] is None
 
 
-def test_blocked_orders_are_deleted(journal) -> None:
-    journal.conn.execute(
-        """INSERT INTO paper_orders
-           (timestamp_utc, symbol, side, quantity, reference_price,
-            take_profit_price, stop_loss_price, status)
-           VALUES ('2026-01-01T00:00:00+00:00', 'AAPL', 'BUY', 1, 10, 11, 9,
-                   'blocked')"""
+def test_blocked_orders_are_kept_but_not_trades(journal) -> None:
+    journal.record_bracket(
+        symbol="AAPL", side="BUY", quantity=1.0,
+        entry_order_id=None, entry_type="MKT", entry_price=None,
+        reference_price=10.0, take_profit_order_id=None,
+        take_profit_price=None, stop_loss_order_id=None,
+        stop_loss_price=9.0, status="blocked",
+        note="No debt-to-market-cap data",
     )
-    journal.conn.commit()
     journal._migrate()
-    assert journal.orders() == []
+    orders = journal.orders()
+    assert len(orders) == 1
+    assert orders[0]["status"] == "blocked"
     assert journal.trades() == []
+    assert journal.has_submitted_entry("AAPL") is False
+    assert journal.open_trades() == []
 
 
 def test_settle_marks_take_profit_and_stop(journal) -> None:

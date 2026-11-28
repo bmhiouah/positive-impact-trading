@@ -1,6 +1,6 @@
 {
   "ticker": "AIR",
-  "enabled": true,
+  "enabled": false,
   "currency": "EUR",
   "exchange": "SMART",
   "signal": { "entry": "m12" },
@@ -11,5 +11,5 @@
     "fixed_take_profit_pct": null,
     "fixed_stop_pct": null
   },
-  "notes": "Airbus (Euronext Paris). Must use EUR — USD SMART resolves to AAR Corp."
+  "notes": "Disabled — Aerospace/Defense maps to weapons exclusion. EUR listing note kept: USD SMART resolves to AAR Corp."
 }

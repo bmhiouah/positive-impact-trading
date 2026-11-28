@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "description": "Manual debt-to-market-cap seed for paper trading. IB paper blocks reqFundamentalData (10358). Values are approximate public total-debt / market-cap ratios for the impact screen (< 0.33). Re-check before relying on them for live capital.",
+  "updated": "2026-11-27",
+  "ratios": {
+    "AAPL": 0.15,
+    "ASML": 0.12,
+    "MSFT": 0.10,
+    "NVDA": 0.05,
+    "TSLA": 0.10,
+    "AMD": 0.08,
+    "AMZN": 0.15,
+    "GOOGL": 0.05,
+    "META": 0.08,
+    "ORCL": 0.25,
+    "COST": 0.10,
+    "SAP": 0.10,
+    "SU": 0.15,
+    "OR": 0.10,
+    "KO": 0.20
+  }
+}

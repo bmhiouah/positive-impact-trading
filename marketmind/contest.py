@@ -676,7 +676,8 @@ def read_symbol(
 
 
 def allow_entry(book: dict, rule: Rule, now_index: int,
-                last_outcome: Optional[str], exit_index: Optional[int]) -> bool:
+                last_outcome: Optional[str], exit_index: Optional[int],
+                *, cold_start: bool = False) -> bool:
     """Whether a live BUY may fire on this completed bar.
 
     Sticky state entries (``m12`` / ``m6`` / ``m3`` / ``trend``) stay true for
@@ -685,13 +686,18 @@ def allow_entry(book: dict, rule: Rule, now_index: int,
     on. After a stop-loss on those entries, also wait until the condition has
     turned off at least once since the exit. Breakout and dip stay
     level-triggered — they are short-lived events.
+
+    Cold start: when the live book has never successfully sent an entry for
+    this symbol, allow a level-true state signal even if the regime was already
+    on yesterday. Otherwise a name that was already in an ``m12`` uptrend when
+    paper trading began would wait months for an off→on flip and never trade.
     """
     verdict = signal_at(*_book_arrays(book), now_index, rule.entry)
     if not verdict:
         return False
     if rule.entry in STATE_ENTRIES and now_index > 0:
         prior = signal_at(*_book_arrays(book), now_index - 1, rule.entry)
-        if prior is True:
+        if prior is True and not cold_start:
             return False
     if last_outcome != "stop_loss" or rule.entry not in STATE_ENTRIES:
         return True

@@ -401,7 +401,16 @@ class LiveTradingRunner:
             logger.error("Entry failed for %s: %s", symbol, exc)
             return "error"
         if not result.get("approved"):
-            logger.info("Not sent for %s: %s", symbol, result.get("rejection_reason"))
+            reason = result.get("rejection_reason") or "compliance blocked"
+            self._journal.record_bracket(
+                symbol=symbol, side="BUY", quantity=quantity,
+                entry_order_id=None, entry_type="MKT",
+                entry_price=None, reference_price=float(signal["price"]),
+                take_profit_order_id=None, take_profit_price=None,
+                stop_loss_order_id=None, stop_loss_price=float(signal["stop"]),
+                status="blocked", account_id=snap.account_id, note=str(reason),
+            )
+            logger.info("Not sent for %s: %s", symbol, reason)
             return "blocked"
         if not result.get("submitted"):
             return "skipped"
@@ -570,9 +579,11 @@ class LiveTradingRunner:
                     exit_index = momentum.index_of_day(book["dates"], closed_day)
             # Rising-edge / stop cooldown live here — count a signal only when
             # the runner would actually attempt an entry (not every day m12
-            # stays true while flat).
+            # stays true while flat). Cold-start lets a never-traded name take
+            # its first entry while an already-on state regime is still true.
             if not contest.allow_entry(
                 book, rule, reading.index, outcome, exit_index,
+                cold_start=not self._journal.has_submitted_entry(symbol),
             ):
                 skipped += 1
                 continue

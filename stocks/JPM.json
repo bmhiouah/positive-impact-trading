@@ -1,6 +1,6 @@
 {
   "ticker": "JPM",
-  "enabled": true,
+  "enabled": false,
   "currency": "USD",
   "exchange": "SMART",
   "signal": { "entry": "m12" },
@@ -11,5 +11,5 @@
     "fixed_take_profit_pct": null,
     "fixed_stop_pct": null
   },
-  "notes": "Seed universe — financials; ethics filter should block equity BUYs"
+  "notes": "Disabled — Banks sector is ethics-excluded; kept for reference only"
 }
