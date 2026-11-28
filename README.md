@@ -66,7 +66,7 @@ python -m marketmind.live_trading --interval 60   # or the installed `run-bot` s
 # Morning one-click (macOS): Gateway if needed + cockpit + open browser
 # Does not Start Algo — that stays a cockpit click.
 ./scripts/start_trading_morning.sh
-./scripts/install_desktop_launcher.sh   # once → Desktop .app + .command (custom chart icon)
+./scripts/install_desktop_launcher.sh   # once → Desktop .app only (custom chart icon)
 ```
 
 Use the project interpreter — the default `python3` has no `ib_insync`:

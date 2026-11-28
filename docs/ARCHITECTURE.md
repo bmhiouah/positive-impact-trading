@@ -56,9 +56,9 @@ marketmind/
     tabs/                   present · future · past, plus the sections they reuse
 scripts/
   run_cockpit.py            single cockpit launcher
-  start_trading_morning.sh  macOS morning: Gateway (:4002) + cockpit (:8501), idempotent
-  install_desktop_launcher.sh  Desktop .app + .command shortcut
-  apply_launcher_icon.sh    custom chart icon (.icns / Finder) on Desktop launchers
+  start_trading_morning.sh  macOS morning: Gateway (:4002) + cockpit (:8501); restarts cockpit if HEAD changed
+  install_desktop_launcher.sh  Desktop .app only (removes legacy .command)
+  apply_launcher_icon.sh    custom chart icon (.icns / Finder) on Desktop .app
 docs/assets/launcher-icon/  master PNG + PositiveImpactTrading.icns
   ib_connection_probe.py    standalone connect → disconnect → reconnect + bracket
 tests/                      unit tests + opt-in live Gateway integration tests
