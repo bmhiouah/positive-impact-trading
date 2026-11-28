@@ -94,15 +94,50 @@ install_app_bundle() {
 </dict>
 </plist>
 PLIST
-  # Open Terminal so Gateway login prompts / status stay visible (same as .command).
+  # IMPORTANT: the repo lives under ~/Desktop. Unsigned .apps launched by Finder
+  # do NOT get Desktop Folder TCC, so a direct `exec` of the starter fails with
+  # "Operation not permitted". Opening the sibling .command (or Terminal) works
+  # because Terminal typically already has Desktop access.
+  local command_shortcut="${DESKTOP}/Positive Impact Trading.command"
   cat >"${app}/Contents/MacOS/PositiveImpactTrading" <<EXEC
 #!/bin/bash
-osascript <<'OSA'
+set -euo pipefail
+STARTER='${starter}'
+COMMAND='${command_shortcut}'
+LOG_DIR="\${TMPDIR:-/tmp}/positive-impact-trading"
+LOG="\${LOG_DIR}/launcher.log"
+mkdir -p "\$LOG_DIR"
+stamp() { date '+%Y-%m-%d %H:%M:%S %Z'; }
+
+if [[ ! -x "\$STARTER" ]]; then
+  echo "\$(stamp) missing starter: \$STARTER" >>"\$LOG"
+  /usr/bin/osascript -e "display alert \\"Positive Impact Trading\\" message \\"Missing starter script:\\n\$STARTER\\n\\nPull/checkout master and re-run scripts/install_desktop_launcher.sh\\" as critical" >/dev/null 2>&1 || true
+  exit 1
+fi
+
+# 1) Preferred: open the Desktop .command so Terminal runs it with Desktop access.
+if [[ -x "\$COMMAND" ]]; then
+  echo "\$(stamp) opening Desktop .command via LaunchServices" >>"\$LOG"
+  /usr/bin/open "\$COMMAND"
+  exit 0
+fi
+
+# 2) Fallback: ask Terminal to exec the starter (needs Automation permission once).
+echo "\$(stamp) .command missing — falling back to Terminal do script" >>"\$LOG"
+if /usr/bin/osascript <<OSA >>"\$LOG" 2>&1
 tell application "Terminal"
   activate
-  do script "exec '${starter}'"
+  do script "exec '\$STARTER'"
 end tell
 OSA
+then
+  exit 0
+fi
+
+echo "\$(stamp) Terminal Automation failed" >>"\$LOG"
+/usr/bin/osascript -e "display alert \\"Positive Impact Trading\\" message \\"Could not start. Re-run scripts/install_desktop_launcher.sh (needs Positive Impact Trading.command on Desktop), then right-click the app → Open. Log:\\n\$LOG\\" as critical" >/dev/null 2>&1 || true
+open -t "\$LOG" >/dev/null 2>&1 || true
+exit 1
 EXEC
   chmod +x "${app}/Contents/MacOS/PositiveImpactTrading"
   xattr -cr "$app" 2>/dev/null || true

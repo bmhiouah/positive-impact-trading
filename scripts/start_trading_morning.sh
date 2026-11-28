@@ -11,9 +11,12 @@ GATEWAY_HOST="${PIT_GATEWAY_HOST:-127.0.0.1}"
 COCKPIT_URL="http://localhost:${COCKPIT_PORT}"
 LOG_DIR="${TMPDIR:-/tmp}/positive-impact-trading"
 COCKPIT_LOG="${LOG_DIR}/cockpit.log"
+LAUNCHER_LOG="${LOG_DIR}/launcher.log"
 
 # Preferred Gateway app (user install under ~/Applications). Override with PIT_GATEWAY_APP.
 GATEWAY_APP="${PIT_GATEWAY_APP:-$HOME/Applications/IB Gateway 10.51/IB Gateway 10.51.app}"
+
+mkdir -p "$LOG_DIR"
 
 port_listening() {
   local host="$1" port="$2"
@@ -48,8 +51,9 @@ wait_for_port() {
   return 1
 }
 
-echo "=== Positive Impact Trading — morning start ==="
+echo "=== Positive Impact Trading — morning start $(date '+%Y-%m-%d %H:%M:%S %Z') ==="
 echo "  repo: ${REPO_ROOT}"
+echo "  log:  ${LAUNCHER_LOG}"
 echo
 
 # --- IB Gateway (paper API socket) ------------------------------------------
@@ -73,8 +77,6 @@ fi
 echo
 
 # --- Streamlit cockpit ------------------------------------------------------
-mkdir -p "$LOG_DIR"
-
 if port_listening "127.0.0.1" "$COCKPIT_PORT"; then
   echo "Cockpit: already serving ${COCKPIT_URL} — reusing"
 else
@@ -83,8 +85,13 @@ else
     echo "Set PIT_PYTHON to the project interpreter (conda env py314)."
     exit 1
   fi
+  if [[ ! -f "${REPO_ROOT}/scripts/run_cockpit.py" ]]; then
+    echo "ERROR: missing ${REPO_ROOT}/scripts/run_cockpit.py"
+    echo "Check out master (or pull) so the repo scripts are present."
+    exit 1
+  fi
   echo "Cockpit: starting on port ${COCKPIT_PORT} (log: ${COCKPIT_LOG})"
-  # Background so this script can open the browser and exit the Terminal wait.
+  # Background so this script can open the browser and return.
   nohup "$PYTHON" "${REPO_ROOT}/scripts/run_cockpit.py" --port "$COCKPIT_PORT" \
     >"$COCKPIT_LOG" 2>&1 &
   disown || true
