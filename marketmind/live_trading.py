@@ -174,18 +174,39 @@ class LiveTradingRunner:
                 break
 
     def _ensure_connection(self) -> bool:
-        """Reconnect automatically if the Gateway dropped the session."""
+        """Reconnect with short backoff if the Gateway dropped the session.
+
+        A single handshake often races Gateway daily restarts / brief TCP gaps.
+        Retry a few times before yielding the poll loop so the algo recovers
+        without a manual Stop→Start when the paper socket comes back.
+        """
         if self._adapter.health_check():
             return True
-        logger.warning("IBKR session lost — attempting to reconnect")
-        try:
-            self._adapter.reconnect()
-            return True
-        except Exception as exc:  # noqa: BLE001
-            with self._lock:
-                self._last_error = f"IBKR reconnect failed: {exc}"
-            logger.error("IBKR reconnect failed: %s", exc)
-            return False
+        delays = (1.0, 2.0, 4.0, 8.0)
+        last_exc: Optional[BaseException] = None
+        for attempt, delay in enumerate(delays, start=1):
+            if not self._running or self._stop_event.is_set():
+                return False
+            logger.warning(
+                "IBKR session lost — reconnect attempt %s/%s",
+                attempt, len(delays),
+            )
+            try:
+                self._adapter.reconnect()
+                with self._lock:
+                    self._last_error = None
+                logger.info("IBKR reconnect succeeded on attempt %s", attempt)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                logger.error("IBKR reconnect attempt %s failed: %s", attempt, exc)
+                if attempt < len(delays) and self._stop_event.wait(delay):
+                    return False
+        message = f"IBKR reconnect failed: {last_exc}"
+        with self._lock:
+            self._last_error = message
+        logger.error(message)
+        return False
 
     def stop(self) -> None:
         """Stop the trading thread and gracefully disconnect from IBKR."""
