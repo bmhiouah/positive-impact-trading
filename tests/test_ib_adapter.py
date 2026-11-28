@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from marketmind import ib_compat  # noqa: F401 - Py3.14 event loop before ib_insync
 from marketmind import config
 from marketmind.broker.ib_adapter import (
     IBKRAdapter,
@@ -163,8 +164,13 @@ def test_connect_failure_is_explicit_and_never_fake_running(monkeypatch) -> None
     with pytest.raises(RuntimeError) as exc:
         adapter.connect()
     message = str(exc.value)
-    assert "IBKR Gateway connection failed" in message
     assert "45999" in message
+    assert (
+        "not accepting connections" in message
+        or "connection failed" in message.lower()
+        or "timed out" in message.lower()
+    )
+    assert ": ." not in message
     assert adapter.is_connected is False
     assert adapter.health_check() is False
     adapter.disconnect()

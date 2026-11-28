@@ -53,6 +53,93 @@ logger = logging.getLogger(__name__)
 _ORDER_REJECT_CODES = {201, 202, 203, 321, 404, 10268}
 _ACCEPTED_STATUSES = {"Submitted", "PreSubmitted", "Filled"}
 
+_CLIENT_ID_BUSY_CODES = frozenset({326, 502, 504, 1100, 2110})
+
+
+def _exception_text(exc: BaseException) -> str:
+    """Flatten an exception and its causes into one searchable string."""
+    parts: List[str] = []
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        text = str(current).strip()
+        parts.append(type(current).__name__ if not text else f"{type(current).__name__}: {text}")
+        current = current.__cause__ or current.__context__
+    return " | ".join(parts)
+
+
+def format_gateway_error(exc: BaseException) -> str:
+    """User-facing IB Gateway connect error — never an empty ``TimeoutError()``.
+
+    Read Account / Start Algo surface this string in the cockpit. Classify the
+    common paper-session failures (port refused, handshake timeout, client id
+    busy) so the Trading tab tells Badre what to do next.
+    """
+    host = config.IBKR_HOST
+    port = config.IBKR_PORT
+    client_id = config.IBKR_CLIENT_ID
+    chain = _exception_text(exc)
+    lowered = chain.lower()
+    raw = str(exc).strip()
+
+    if (
+        "already in use" in lowered
+        or "client id 1 is already in use" in lowered
+        or " error: 326:" in lowered
+        or ": 326:" in lowered
+    ):
+        return (
+            f"IBKR client id {client_id} is already in use on {host}:{port}. "
+            "Stop the algo (or close any other API client), wait a second, "
+            "then click Read account again."
+        )
+
+    refused = isinstance(exc, ConnectionRefusedError)
+    cause: Optional[BaseException] = exc
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, ConnectionRefusedError):
+            refused = True
+            break
+        cause = cause.__cause__ or cause.__context__
+    if refused or "connection refused" in lowered or "errno 61" in lowered:
+        return (
+            f"IB Gateway is not accepting connections on {host}:{port}. "
+            "Open IB Gateway, log into the paper account, wait until the API "
+            "socket is listening, then click Read account again."
+        )
+
+    timed_out = isinstance(exc, TimeoutError) or "timeout" in lowered
+    if timed_out:
+        detail = raw if raw and raw not in {".", ":", "()"} else "handshake timed out"
+        return (
+            f"IBKR Gateway connection timed out at {host}:{port} ({detail}). "
+            "Confirm Gateway is logged into paper and client id 1 is free, "
+            "then try Read account again."
+        )
+
+    # Avoid "…4002: . Check…" when str(exc) is empty (bare TimeoutError, etc.).
+    detail = raw if raw else type(exc).__name__
+    blank_wrap = ": . " in detail or detail.endswith(": .")
+    already = (
+        detail.startswith("IBKR Gateway ")
+        or detail.startswith("IB Gateway is not accepting")
+        or detail.startswith(f"IBKR client id {client_id}")
+    )
+    if already and not blank_wrap:
+        return detail
+    if blank_wrap:
+        detail = type(exc).__name__
+
+    return (
+        f"IBKR Gateway connection failed at {host}:{port}: {detail}. "
+        "Check that the Gateway is running, you are logged into the "
+        "paper account, API sockets are enabled, and that no other "
+        "client is using client id 1."
+    )
+
 
 @dataclass(frozen=True)
 class OrderFill:
@@ -417,10 +504,20 @@ class IBKRAdapter:
             )
         except Exception as exc:  # noqa: BLE001
             self._safe_disconnect(ib)
+            # Error 326 often arrives as a peer-close + empty TimeoutError();
+            # classify the IB code before the generic handshake wrapper.
+            if any(code in _CLIENT_ID_BUSY_CODES for code, _ in errors):
+                raise RuntimeError(
+                    "client id 1 is already in use — close the other IBKR API "
+                    "client before starting the algo (only one connection is "
+                    "allowed)"
+                ) from exc
             detail = "; ".join(f"{c}: {m}" for c, m in errors[:3])
+            kind = type(exc).__name__
+            body = str(exc).strip() or kind
             suffix = f" IB error: {detail}" if detail else ""
             raise RuntimeError(
-                f"handshake failed ({type(exc).__name__}: {exc}).{suffix}"
+                f"handshake failed ({kind}: {body}).{suffix}"
             ) from exc
         finally:
             ib.errorEvent -= on_error
@@ -428,7 +525,7 @@ class IBKRAdapter:
         if not ib.isConnected():
             self._safe_disconnect(ib)
             raise RuntimeError("socket closed immediately after handshake")
-        if any(code in (326, 502, 504, 1100, 2110) for code, _ in errors):
+        if any(code in _CLIENT_ID_BUSY_CODES for code, _ in errors):
             self._safe_disconnect(ib)
             raise RuntimeError(
                 "client id 1 is already in use — close the other IBKR API client "
@@ -513,13 +610,7 @@ class IBKRAdapter:
                 return info
             except Exception as exc:  # noqa: BLE001
                 self._teardown_after_failed_connect()
-                message = (
-                    f"IBKR Gateway connection failed at "
-                    f"{config.IBKR_HOST}:{config.IBKR_PORT}: {exc}. "
-                    "Check that the Gateway is running, you are logged into the "
-                    "paper account, API sockets are enabled, and that no other "
-                    "client is using client id 1."
-                )
+                message = format_gateway_error(exc)
                 self._last_error = message
                 raise RuntimeError(message) from exc
 
