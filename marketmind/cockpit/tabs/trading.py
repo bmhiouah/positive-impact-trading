@@ -66,16 +66,21 @@ def render(store=None) -> None:
     result = state.algo_last_result or {}
 
     # --- control panel -------------------------------------------------------
+    running = state.algo_running
+    # Clickable action = primary; inactive Start/Stop = greyed disabled.
+    start_type = "secondary" if running else "primary"
+    stop_type = "primary" if running else "secondary"
+
     control, status = st.columns([2, 3])
     with control:
         b1, b2 = st.columns(2)
-        if b1.button("Start Algo", disabled=state.algo_running,
-                     type="primary", width="stretch", key="start_algo"):
+        if b1.button("Start Algo", disabled=running,
+                     type=start_type, width="stretch", key="start_algo"):
             with st.spinner("Connect → read capital → start trading…"):
                 start_algo()
             st.rerun()
-        if b2.button("Stop Algo", disabled=not state.algo_running,
-                     width="stretch", key="stop_algo"):
+        if b2.button("Stop Algo", disabled=not running,
+                     type=stop_type, width="stretch", key="stop_algo"):
             stop_algo()
             st.rerun()
         st.caption(
@@ -84,8 +89,8 @@ def render(store=None) -> None:
         )
     with status:
         pills = [
-            theme.pill("Algo running" if state.algo_running else "Algo stopped",
-                       "ok" if state.algo_running else "mute"),
+            theme.pill("Algo Running" if running else "Algo Stopped",
+                       "ok" if running else "mute"),
             theme.pill("Gateway connected" if state.ibkr_connected
                        else "Gateway idle",
                        "ok" if state.ibkr_connected else "mute"),
